@@ -214,7 +214,6 @@ async def admin_panel(message: types.Message):
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=kb)
     await message.answer("⚙️ Admin Configuration Panel", reply_markup=keyboard)
 
-Intel bills, [1/13/2026 11:23 PM]
 @dp.callback_query(F.data == "set_upi")
 async def set_upi_start(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer("Send the new UPI ID (e.g., name@okaxis):")

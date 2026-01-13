@@ -3,3 +3,5 @@ motor==3.3.2
 qrcode==7.4.2
 pillow==10.2.0
 dnspython==2.6.1
+setuptools
+wheel

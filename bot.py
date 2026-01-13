@@ -171,6 +171,6 @@ async def main():
     print("Bot is starting...")
     await dp.start_polling(bot)
 
-if_name_== "_main_":
+if__name__== "__main__":
     asyncio.run(main())
     

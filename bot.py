@@ -172,5 +172,5 @@ async def main():
     await dp.start_polling(bot)
 
 if name == "main":
-    asyncio.run(main())  # <--- This needs to be indented
+    asyncio.run(main())
     

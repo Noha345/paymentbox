@@ -29,7 +29,7 @@ users_col = db["users"]
 # ==========================================
 # BOT SETUP
 # ==========================================
-bot = Bot(token=TOKEN)
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 logging.basicConfig(level=logging.INFO)
 

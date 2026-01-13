@@ -16,7 +16,7 @@ from PIL import Image
 import os
 TOKEN = os.getenv("8084906584:AAHqby3b7gSfHjFw3FXqiOFUhpRAUCrabk4")
 MONGO_URL = os.getenv("mongodb+srv://paybox:Noha9980@cluster0.xngngqj.mongodb.net/?appName=Cluster0")
-ADMIN_ID = int(os.getenv("8072674531")) # Your Telegram ID
+ADMIN_ID = 8072674531 # Your Telegram ID
 
 # ==========================================
 # DATABASE SETUP (Async MongoDB)

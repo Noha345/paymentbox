@@ -1,7 +1,7 @@
-aiogram==3.0.0
-motor==3.0.0
-qrcode==7.0
-pillow==10.0.0
-dnspython==2.0.0
+aiogram
+motor
+qrcode
+pillow
+dnspython
 setuptools
 wheel

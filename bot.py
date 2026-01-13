@@ -119,7 +119,6 @@ async def buy_vip_menu(message: types.Message):
         reply_markup=keyboard
     )
 
-Intel bills, [1/13/2026 11:23 PM]
 @dp.callback_query(F.data == "pay_upi")
 async def process_upi_pay(callback: types.CallbackQuery, state: FSMContext):
     settings = await get_settings()

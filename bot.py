@@ -170,7 +170,10 @@ async def admin_approve(callback: types.CallbackQuery):
 async def main():
     print("Bot is starting...")
     await dp.start_polling(bot)
-
-if__name__== "__main__":
-    asyncio.run(main())
+    
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Bot stopped!"))
     

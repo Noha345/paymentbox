@@ -5,3 +5,4 @@ pillow
 dnspython
 setuptools
 wheel
+python-dotenv

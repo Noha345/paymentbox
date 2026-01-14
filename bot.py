@@ -297,4 +297,4 @@ async def main():
 
     if not bot or not dp:
         while True:
-            await asyncio.sleep(3600
+            await asyncio.sleep(3600)

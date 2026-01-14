@@ -23,7 +23,7 @@ load_dotenv()
 # CONFIGURATION (FIXED)
 # ==========================================
 # 🛑 ERROR WAS HERE: We now ask for the "KEY", not the "VALUE"
-TOKEN = os.getenv("8084906584:AAHTn6qNxYIo46ZXQOonpS4YOBIPU7GThWg")
+TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URL = os.getenv("mongodb+srv://paybox:Noha9980@cluster0.xngngqj.mongodb.net/?appName=Cluster0")
 
 # Admin ID handling

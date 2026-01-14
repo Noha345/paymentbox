@@ -16,3 +16,9 @@ git remote add origin https://github.com/Noha345/paymentbox.git
 
 # Push the code to GitHub
 git push -u origin main
+git add .
+git commit -m "Update bot features"
+git push origin main
+git add requirements.txt
+git commit -m "Add dependencies"
+git push origin main

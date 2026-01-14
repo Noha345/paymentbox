@@ -3,340 +3,377 @@ import asyncio
 import io
 import os
 import datetime
+from typing import Optional, Dict, Any
 
 # Third-party imports
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
 from motor.motor_asyncio import AsyncIOMotorClient
 import qrcode
 from dotenv import load_dotenv
 
-# Load local .env if available
+# Load environment variables
 load_dotenv()
 
 # ==========================================
-# CONFIGURATION
+# ⚙️ CONFIGURATION
 # ==========================================
-TOKEN = os.getenv("BOT_TOKEN")
-MONGO_URL = os.getenv("MONGO_URL")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-PORT = int(os.getenv("PORT", 8080))
-BOT_PASSWORD = os.getenv("BOT_PASSWORD", "1234")  # Default password
+class Config:
+    TOKEN = os.getenv("BOT_TOKEN")
+    MONGO_URL = os.getenv("MONGO_URL")
+    ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+    PORT = int(os.getenv("PORT", 8080))
+    BOT_PASSWORD = os.getenv("BOT_PASSWORD", "1234")
+    
+    # Default Categories if DB is empty
+    DEFAULT_SETTINGS = {
+        "_id": "main_settings",
+        "upi_id": "example@oksbi",
+        "paypal_link": "https://paypal.me/example",
+        "bank_details": "Bank: X\nAcc: 123\nIFSC: X123",
+        "categories": {
+            "adult": {"name": "🔞 Adult Hub", "price": "10 INR", "link": "https://t.me/+example"},
+            "movie": {"name": "🎬 Movies", "price": "100 INR", "link": "https://t.me/+example"},
+            "coding": {"name": "💻 Coding", "price": "200 INR", "link": "https://t.me/+example"},
+        }
+    }
 
-logging.basicConfig(level=logging.INFO)
-
-# ==========================================
-# DATABASE SETUP
-# ==========================================
-settings_col = None
-users_col = None
-purchases_col = None
-
-async def init_db():
-    global settings_col, users_col, purchases_col
-    if MONGO_URL:
-        try:
-            cluster = AsyncIOMotorClient(MONGO_URL)
-            db = cluster["VipBotDB"]
-            settings_col = db["settings"]
-            users_col = db["users"]
-            purchases_col = db["purchases"]
-            logging.info("✅ MongoDB Connected")
-        except Exception as e:
-            logging.error(f"❌ MongoDB Connection Failed: {e}")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ==========================================
-# BOT SETUP
+# 🗄️ DATABASE MANAGER
 # ==========================================
-if TOKEN:
-    bot = Bot(token=TOKEN)
-    dp = Dispatcher(storage=MemoryStorage())
-else:
-    bot = None
-    dp = None
+class Database:
+    def __init__(self, uri: str):
+        self.client = AsyncIOMotorClient(uri)
+        self.db = self.client["VipBotDB"]
+        self.settings = self.db["settings"]
+        self.users = self.db["users"]
+        self.purchases = self.db["purchases"]
+
+    async def get_settings(self) -> Dict:
+        """Fetch settings or initialize defaults."""
+        data = await self.settings.find_one({"_id": "main_settings"})
+        if not data:
+            await self.settings.insert_one(Config.DEFAULT_SETTINGS)
+            return Config.DEFAULT_SETTINGS
+        return data
+
+    async def verify_user(self, user_id: int, username: str = None):
+        """Mark a user as verified (password entered)."""
+        await self.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"verified": True, "username": username, "joined_at": datetime.datetime.now()}},
+            upsert=True
+        )
+
+    async def is_verified(self, user_id: int) -> bool:
+        user = await self.users.find_one({"user_id": user_id})
+        return user.get("verified", False) if user else False
+
+    async def add_purchase(self, user_id: int, item_name: str):
+        await self.purchases.insert_one({
+            "user_id": user_id, 
+            "item": item_name, 
+            "date": datetime.datetime.now()
+        })
+    
+    async def get_all_users(self):
+        return self.users.find({})
+
+    async def get_stats(self):
+        users = await self.users.count_documents({})
+        sales = await self.purchases.count_documents({})
+        return users, sales
 
 # ==========================================
-# DATA & STATES
+# 🤖 BOT SETUP
 # ==========================================
-DEFAULT_CATEGORIES = {
-    "adult": {"name": "🔞 Adult Hub", "price": "10 INR", "link": "https://t.me/example"},
-    "movie": {"name": "🎬 Movies & Series", "price": "100 INR", "link": "https://t.me/example"},
-    "coding": {"name": "💻 Coding Resources", "price": "200 INR", "link": "https://t.me/example"},
-    "gaming": {"name": "🎮 Gaming & Mods", "price": "120 INR", "link": "https://t.me/example"}
-}
+if not Config.TOKEN or not Config.MONGO_URL:
+    logging.critical("❌ BOT_TOKEN or MONGO_URL missing in .env")
+    exit(1)
 
+# Initialize DB
+db = Database(Config.MONGO_URL)
+
+# Initialize Bot with HTML parsing globally
+bot = Bot(token=Config.TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher(storage=MemoryStorage())
+
+# ==========================================
+# 🧠 STATES & HELPERS
+# ==========================================
 class UserState(StatesGroup):
     awaiting_password = State()
     waiting_for_proof = State()
     broadcast_msg = State()
 
-# ==========================================
-# HELPERS
-# ==========================================
-async def get_settings():
-    if settings_col is None:
-        return None
-    settings = await settings_col.find_one({"_id": "main_settings"})
-    if not settings:
-        settings = {
-            "_id": "main_settings",
-            "upi_id": "nohasheldendsouza@oksbi",
-            "paypal_link": "https://paypal.me/yourid",
-            "bank_details": "Bank: SBI\nAcc: 123456789\nIFSC: SBIN0001234",
-            "categories": DEFAULT_CATEGORIES
-        }
-        await settings_col.insert_one(settings)
-    return settings
-
-def generate_upi_qr(upi_id: str):
-    upi_url = f"upi://pay?pa={upi_id}&pn=VIP_Subscription&cu=INR"
-    qr = qrcode.make(upi_url)
+def generate_qr(data: str) -> io.BytesIO:
+    qr = qrcode.make(data)
     bio = io.BytesIO()
     qr.save(bio, format="PNG")
     bio.seek(0)
     return bio
 
-async def is_user_verified(user_id: int):
-    if not users_col: return False
-    user = await users_col.find_one({"user_id": user_id})
-    return user and user.get("verified", False)
+# ==========================================
+# 🛡️ ADMIN HANDLERS
+# ==========================================
+@dp.message(Command("users"))
+async def admin_stats(message: types.Message):
+    if message.from_user.id != Config.ADMIN_ID: return
+    users, sales = await db.get_stats()
+    await message.answer(f"📊 <b>Bot Statistics</b>\n\n👥 Total Verified Users: {users}\n🛒 Total Sales: {sales}")
+
+@dp.message(Command("addvip"))
+async def admin_manual_add(message: types.Message):
+    if message.from_user.id != Config.ADMIN_ID: return
+    try:
+        _, target_id = message.text.split()
+        target_id = int(target_id)
+        await db.verify_user(target_id)
+        await bot.send_message(target_id, "🎉 <b>Congratulations!</b>\nYou have been granted VIP access by Admin.")
+        await message.answer(f"✅ User <code>{target_id}</code> verified.")
+    except ValueError:
+        await message.answer("⚠️ Usage: <code>/addvip 123456789</code>")
+
+@dp.message(Command("broadcast"))
+async def admin_broadcast_start(message: types.Message, state: FSMContext):
+    if message.from_user.id != Config.ADMIN_ID: return
+    await message.answer("📢 <b>Broadcast Mode</b>\nSend the message (Text/Image/Video) you want to send to all users.")
+    await state.set_state(UserState.broadcast_msg)
+
+@dp.message(UserState.broadcast_msg)
+async def admin_broadcast_process(message: types.Message, state: FSMContext):
+    await message.answer("🚀 Broadcasting started... This might take a while.")
+    users_cursor = await db.get_all_users()
+    
+    success = 0
+    blocked = 0
+    
+    async for user in users_cursor:
+        user_id = user['user_id']
+        try:
+            await message.copy_to(chat_id=user_id)
+            success += 1
+            await asyncio.sleep(0.05) # Basic throttle
+        except TelegramForbiddenError:
+            blocked += 1
+            # Optional: await db.users.delete_one({"user_id": user_id})
+        except TelegramRetryAfter as e:
+            await asyncio.sleep(e.retry_after)
+            try:
+                await message.copy_to(chat_id=user_id)
+                success += 1
+            except: pass
+        except Exception as e:
+            logging.error(f"Failed to send to {user_id}: {e}")
+
+    await message.answer(f"✅ <b>Broadcast Complete</b>\n\nSent: {success}\nBlocked/Failed: {blocked}")
+    await state.clear()
 
 # ==========================================
-# WEB SERVER
+# 🔐 AUTHENTICATION
+# ==========================================
+@dp.message(CommandStart())
+async def cmd_start(message: types.Message, state: FSMContext):
+    is_verified = await db.is_verified(message.from_user.id)
+    
+    if is_verified:
+        await show_main_menu(message)
+    else:
+        await message.answer("🔒 <b>Protected Bot</b>\nPlease enter the access password:")
+        await state.set_state(UserState.awaiting_password)
+
+@dp.message(UserState.awaiting_password)
+async def process_password(message: types.Message, state: FSMContext):
+    if message.text == Config.BOT_PASSWORD:
+        await db.verify_user(message.from_user.id, message.from_user.username)
+        await message.answer("✅ <b>Access Granted!</b>")
+        await state.clear()
+        await show_main_menu(message)
+    else:
+        await message.answer("❌ <b>Wrong Password.</b> Try again:")
+
+async def show_main_menu(message: types.Message):
+    kb = ReplyKeyboardBuilder()
+    kb.button(text="💎 Buy VIP Membership")
+    kb.button(text="🆘 Support")
+    kb.adjust(2)
+    await message.answer(
+        f"👋 Welcome <b>{message.from_user.first_name}</b>!", 
+        reply_markup=kb.as_markup(resize_keyboard=True)
+    )
+
+# ==========================================
+# 🛍️ STORE LOGIC
+# ==========================================
+@dp.message(F.text == "💎 Buy VIP Membership")
+async def store_categories(message: types.Message):
+    if not await db.is_verified(message.from_user.id): return
+    
+    settings = await db.get_settings()
+    builder = InlineKeyboardBuilder()
+    
+    for key, data in settings.get("categories", {}).items():
+        builder.button(text=f"{data['name']} - {data['price']}", callback_data=f"buy_{key}")
+    
+    builder.adjust(1)
+    await message.answer("✨ <b>Select a Plan:</b>", reply_markup=builder.as_markup())
+
+@dp.callback_query(F.data.startswith("buy_"))
+async def store_payment_methods(callback: types.CallbackQuery, state: FSMContext):
+    cat_key = callback.data.split("_")[1]
+    settings = await db.get_settings()
+    category = settings["categories"].get(cat_key)
+    
+    if not category: return await callback.answer("Plan not found.")
+    
+    # Save selection to state
+    await state.update_data(cat_key=cat_key, cat_name=category['name'], price=category['price'])
+    
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🇮🇳 UPI", callback_data="pay_upi")
+    kb.button(text="🌍 PayPal", callback_data="pay_paypal")
+    kb.button(text="🏦 Bank", callback_data="pay_bank")
+    kb.adjust(2)
+    
+    await callback.message.edit_text(
+        f"💎 <b>{category['name']}</b>\n💰 Price: {category['price']}\n\nSelect Payment Method:",
+        reply_markup=kb.as_markup()
+    )
+
+@dp.callback_query(F.data.in_({"pay_upi", "pay_paypal", "pay_bank"}))
+async def store_show_payment_details(callback: types.CallbackQuery, state: FSMContext):
+    settings = await db.get_settings()
+    method = callback.data
+    caption = ""
+    photo_file = None
+    
+    if method == "pay_upi":
+        upi_id = settings.get('upi_id', 'N/A')
+        upi_url = f"upi://pay?pa={upi_id}&pn=VIP&cu=INR"
+        qr_bytes = generate_qr(upi_url)
+        photo_file = types.BufferedInputFile(qr_bytes.getvalue(), filename="qr.png")
+        caption = f"<b>Pay via UPI</b>\nID: <code>{upi_id}</code>\n\nScan QR or copy ID. Send screenshot after payment."
+        
+    elif method == "pay_paypal":
+        link = settings.get('paypal_link', '#')
+        caption = f"<b>Pay via PayPal</b>\nLink: <a href='{link}'>Click Here</a>\n\nSend screenshot after payment."
+        
+    elif method == "pay_bank":
+        details = settings.get('bank_details', 'N/A')
+        caption = f"<b>Pay via Bank</b>\n<pre>{details}</pre>\n\nSend screenshot after payment."
+
+    await state.set_state(UserState.waiting_for_proof)
+    
+    if photo_file:
+        await callback.message.answer_photo(photo_file, caption=caption)
+    else:
+        await callback.message.answer(caption, disable_web_page_preview=True)
+        
+    await callback.answer()
+
+# ==========================================
+# 📸 PROOF & APPROVAL
+# ==========================================
+@dp.message(UserState.waiting_for_proof)
+async def process_proof(message: types.Message, state: FSMContext):
+    if not (message.photo or message.document):
+        return await message.answer("⚠️ Please send the payment screenshot (Image or File).")
+    
+    data = await state.get_data()
+    await state.clear()
+    
+    # Notify User
+    await message.answer("✅ <b>Proof Received!</b>\nAdmin will verify shortly.")
+    
+    # Notify Admin
+    if Config.ADMIN_ID:
+        kb = InlineKeyboardBuilder()
+        kb.button(text="✅ Approve", callback_data=f"appr_{message.from_user.id}_{data['cat_key']}")
+        kb.button(text="❌ Reject", callback_data=f"rej_{message.from_user.id}")
+        
+        caption = (
+            f"🧾 <b>New Purchase Request</b>\n"
+            f"👤 User: {message.from_user.full_name} (<code>{message.from_user.id}</code>)\n"
+            f"📦 Plan: {data['cat_name']}\n"
+            f"💰 Price: {data['price']}"
+        )
+        
+        # Send proof to admin
+        if message.photo:
+            await bot.send_photo(Config.ADMIN_ID, message.photo[-1].file_id, caption=caption, reply_markup=kb.as_markup())
+        else:
+            await bot.send_document(Config.ADMIN_ID, message.document.file_id, caption=caption, reply_markup=kb.as_markup())
+
+@dp.callback_query(F.data.startswith("appr_"))
+async def admin_approve(callback: types.CallbackQuery):
+    _, user_id, cat_key = callback.data.split("_")
+    user_id = int(user_id)
+    
+    settings = await db.get_settings()
+    category = settings["categories"].get(cat_key)
+    
+    if category:
+        try:
+            # 1. Send Link to User
+            await bot.send_message(
+                user_id, 
+                f"🎉 <b>Payment Accepted!</b>\n\nHere is your link:\n{category['link']}"
+            )
+            # 2. Log Purchase
+            await db.add_purchase(user_id, category['name'])
+            # 3. Update Admin Message
+            await callback.message.edit_caption(caption=callback.message.caption + "\n\n✅ <b>APPROVED</b>")
+        except Exception as e:
+            await callback.answer(f"Error: {e}")
+    else:
+        await callback.answer("Category no longer exists.")
+
+@dp.callback_query(F.data.startswith("rej_"))
+async def admin_reject(callback: types.CallbackQuery):
+    user_id = int(callback.data.split("_")[1])
+    try:
+        await bot.send_message(user_id, "❌ <b>Payment Rejected.</b>\nPlease contact support if this is a mistake.")
+        await callback.message.edit_caption(caption=callback.message.caption + "\n\n❌ <b>REJECTED</b>")
+    except:
+        pass
+
+@dp.message(F.text == "🆘 Support")
+async def support_handler(message: types.Message):
+    await message.answer(f"🆘 <b>Support</b>\nContact Admin: <a href='tg://user?id={Config.ADMIN_ID}'>Click Here</a>")
+
+# ==========================================
+# 🌍 WEB SERVER & MAIN
 # ==========================================
 async def health_check(request):
-    return web.Response(text="Bot is running!")
+    return web.Response(text="Bot is Alive")
 
-async def start_web_server():
+async def main():
+    # 1. Web Server for Health Checks (Render/Railway/Heroku support)
     app = web.Application()
     app.router.add_get("/", health_check)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    site = web.TCPSite(runner, "0.0.0.0", Config.PORT)
     await site.start()
-    logging.info(f"🌐 Web server running on port {PORT}")
+    logging.info(f"🌐 Web Server running on port {Config.PORT}")
 
-# ==========================================
-# ADMIN COMMANDS (NEW)
-# ==========================================
-if dp:
-    @dp.message(Command("users"))
-    async def stats_cmd(message: types.Message):
-        if message.from_user.id != ADMIN_ID: return
-        
-        if users_col:
-            total_users = await users_col.count_documents({})
-            total_sales = await purchases_col.count_documents({})
-            await message.answer(f"📊 **Bot Statistics**\n\n👥 Total Users: {total_users}\n🛒 Total Sales: {total_sales}")
-        else:
-            await message.answer("⚠️ Database not connected.")
-
-    @dp.message(Command("broadcast"))
-    async def broadcast_cmd(message: types.Message, state: FSMContext):
-        if message.from_user.id != ADMIN_ID: return
-        await message.answer("📢 Please send the message you want to broadcast (Text, Photo, or Video).")
-        await state.set_state(UserState.broadcast_msg)
-
-    @dp.message(UserState.broadcast_msg)
-    async def process_broadcast(message: types.Message, state: FSMContext):
-        if not users_col: return
-        
-        await message.answer("🚀 Broadcasting started...")
-        users = users_col.find({})
-        count = 0
-        async for user in users:
-            try:
-                await message.copy_to(chat_id=user['user_id'])
-                count += 1
-                await asyncio.sleep(0.05) # Prevent flood wait
-            except Exception:
-                pass
-        
-        await message.answer(f"✅ Broadcast complete.\nSent to {count} users.")
-        await state.clear()
-
-    @dp.message(Command("addvip"))
-    async def manual_add_vip(message: types.Message):
-        if message.from_user.id != ADMIN_ID: return
-        
-        try:
-            # Usage: /addvip 123456789
-            args = message.text.split()
-            if len(args) < 2:
-                return await message.answer("⚠️ Usage: `/addvip USER_ID`")
-            
-            target_id = int(args[1])
-            if users_col:
-                await users_col.update_one(
-                    {"user_id": target_id},
-                    {"$set": {"verified": True, "manual_add": True}},
-                    upsert=True
-                )
-                await bot.send_message(target_id, "🎉 **Congratulations!**\nYou have been given VIP access by Admin.")
-                await message.answer(f"✅ User {target_id} added to VIP.")
-        except Exception as e:
-            await message.answer(f"❌ Error: {e}")
-
-    @dp.message(Command("support"))
-    async def support_cmd(message: types.Message):
-        # Change this to your username
-        await message.answer("🆘 **Support**\n\nContact Admin: @YourTelegramUsername")
-
-# ==========================================
-# STANDARD HANDLERS
-# ==========================================
-if dp:
-    @dp.message(CommandStart())
-    async def cmd_start(message: types.Message, state: FSMContext):
-        if users_col is None: return await message.answer("⚠️ DB Error.")
-
-        if await is_user_verified(message.from_user.id):
-            await show_main_menu(message)
-        else:
-            await message.answer("🔒 **Password Protected**\nEnter password:")
-            await state.set_state(UserState.awaiting_password)
-
-    @dp.message(UserState.awaiting_password)
-    async def process_password(message: types.Message, state: FSMContext):
-        if message.text == BOT_PASSWORD:
-            if users_col:
-                await users_col.update_one(
-                    {"user_id": message.from_user.id},
-                    {"$set": {"verified": True, "username": message.from_user.username}},
-                    upsert=True
-                )
-            await message.answer("✅ Password Correct!")
-            await state.clear()
-            await show_main_menu(message)
-        else:
-            await message.answer("❌ Incorrect Password.")
-
-    async def show_main_menu(message: types.Message):
-        kb = [
-            [types.KeyboardButton(text="💎 Buy VIP Membership")],
-            [types.KeyboardButton(text="🆘 Support")]
-        ]
-        await message.answer("👋 Welcome to VIP Store.", reply_markup=types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True))
-
-    @dp.message(F.text == "🆘 Support")
-    async def support_btn(message: types.Message):
-        await support_cmd(message)
-
-    @dp.message(F.text == "💎 Buy VIP Membership")
-    async def show_categories(message: types.Message):
-        if not await is_user_verified(message.from_user.id):
-            return await message.answer("🔒 Login first.")
-        
-        settings = await get_settings()
-        if not settings: return await message.answer("⚠️ Error loading settings.")
-
-        builder = InlineKeyboardBuilder()
-        for key, data in settings["categories"].items():
-            builder.button(text=f"{data['name']} ({data['price']})", callback_data=f"cat_{key}")
-        builder.adjust(1)
-        await message.answer("✨ Select Category:", reply_markup=builder.as_markup())
-
-    @dp.callback_query(F.data.startswith("cat_"))
-    async def select_category(callback: types.CallbackQuery, state: FSMContext):
-        key = callback.data.split("_")[1]
-        settings = await get_settings()
-        category = settings["categories"].get(key)
-        
-        if not category: return await callback.answer("Invalid.")
-        await state.update_data(category_key=key, category_name=category['name'], price=category['price'])
-
-        buttons = [
-            [types.InlineKeyboardButton(text="🇮🇳 UPI", callback_data="pay_upi")],
-            [types.InlineKeyboardButton(text="🌍 PayPal", callback_data="pay_paypal")],
-            [types.InlineKeyboardButton(text="🏦 Bank", callback_data="pay_bank")]
-        ]
-        await callback.message.edit_text(f"💎 **{category['name']}**\n💰 {category['price']}\n\nSelect Payment:", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
-
-    @dp.callback_query(F.data.in_({"pay_upi", "pay_paypal", "pay_bank"}))
-    async def show_payment(callback: types.CallbackQuery, state: FSMContext):
-        settings = await get_settings()
-        method = callback.data
-        
-        text = ""
-        photo = None
-
-        if method == "pay_upi":
-            qr = generate_upi_qr(settings["upi_id"])
-            photo = types.BufferedInputFile(qr.getvalue(), "upi.png")
-            text = f"**Pay via UPI**\nID: `{settings['upi_id']}`\nScan & send proof."
-        elif method == "pay_paypal":
-            text = f"**Pay via PayPal**\nLink: {settings['paypal_link']}\nSend proof."
-        elif method == "pay_bank":
-            text = f"**Pay via Bank**\n{settings['bank_details']}\nSend proof."
-
-        if photo:
-            await callback.message.answer_photo(photo, caption=text, parse_mode="Markdown")
-        else:
-            await callback.message.answer(text, parse_mode="Markdown")
-        
-        await state.set_state(UserState.waiting_for_proof)
-        await callback.answer()
-
-    @dp.message(UserState.waiting_for_proof)
-    async def receive_proof(message: types.Message, state: FSMContext):
-        if not message.photo and not message.document:
-            return await message.answer("⚠️ Send screenshot.")
-        
-        data = await state.get_data()
-        await state.clear()
-        await message.answer("✅ Proof sent to admin.")
-
-        if ADMIN_ID:
-            kb = InlineKeyboardBuilder()
-            kb.button(text="✅ Approve", callback_data=f"approve_{message.from_user.id}_{data.get('category_key')}")
-            kb.button(text="❌ Reject", callback_data=f"reject_{message.from_user.id}")
-            
-            caption = f"🧾 **Proof**\nUser: {message.from_user.id}\nPlan: {data.get('category_name')}"
-            
-            if message.photo:
-                await bot.send_photo(ADMIN_ID, message.photo[-1].file_id, caption=caption, reply_markup=kb.as_markup(), parse_mode="Markdown")
-            else:
-                await bot.send_document(ADMIN_ID, message.document.file_id, caption=caption, reply_markup=kb.as_markup(), parse_mode="Markdown")
-
-    @dp.callback_query(F.data.startswith("approve_"))
-    async def approve_user(callback: types.CallbackQuery):
-        _, user_id, cat_key = callback.data.split("_")
-        user_id = int(user_id)
-        settings = await get_settings()
-        cat = settings["categories"].get(cat_key)
-        
-        try:
-            await bot.send_message(user_id, f"✅ **Approved!**\nLink: {cat['link']}")
-            if purchases_col:
-                await purchases_col.insert_one({"user_id": user_id, "item": cat['name'], "date": datetime.datetime.utcnow()})
-            await callback.message.edit_caption(caption=callback.message.caption + "\n\n✅ APPROVED")
-        except Exception as e:
-            await callback.answer(f"Error: {e}")
-
-    @dp.callback_query(F.data.startswith("reject_"))
-    async def reject_user(callback: types.CallbackQuery):
-        user_id = int(callback.data.split("_")[1])
-        try:
-            await bot.send_message(user_id, "❌ Payment Rejected.")
-            await callback.message.edit_caption(caption=callback.message.caption + "\n\n❌ REJECTED")
-        except: pass
-
-# ==========================================
-# MAIN
-# ==========================================
-async def main():
-    await init_db()
-    await start_web_server()
-    if bot:
-        await bot.delete_webhook(drop_pending_updates=True)
-        logging.info("🚀 Bot started")
-        await dp.start_polling(bot)
+    # 2. Start Bot
+    await bot.delete_webhook(drop_pending_updates=True)
+    logging.info(f"🚀 Bot started as @{(await bot.get_me()).username}")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
-        
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("🛑 Bot stopped")

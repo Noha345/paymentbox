@@ -40,9 +40,7 @@ class Config:
         "paypal_link": "https://paypal.me/example",
         "bank_details": "Bank: X\nAcc: 123\nIFSC: X123",
         "categories": {
-            "adult": {"name": "🔞 Adult Hub", "price": "10 INR", "link": "https://t.me/+example"},
             "movie": {"name": "🎬 Movies", "price": "100 INR", "link": "https://t.me/+example"},
-            "coding": {"name": "💻 Coding", "price": "200 INR", "link": "https://t.me/+example"},
         }
     }
 
@@ -93,6 +91,20 @@ class Database:
         users = await self.users.count_documents({})
         sales = await self.purchases.count_documents({})
         return users, sales
+
+    # --- NEW METHODS ADDED ---
+    async def add_category(self, key: str, name: str, price: str, link: str):
+        """Add or update a store category dynamically."""
+        await self.settings.update_one(
+            {"_id": "main_settings"},
+            {"$set": {f"categories.{key}": {"name": name, "price": price, "link": link}}},
+            upsert=True
+        )
+
+    async def get_user_purchases(self, user_id: int):
+        """Fetch purchase history for a specific user."""
+        cursor = self.purchases.find({"user_id": user_id}).sort("date", -1)
+        return await cursor.to_list(length=10)
 
 # ==========================================
 # 🤖 BOT SETUP
@@ -166,7 +178,6 @@ async def admin_broadcast_process(message: types.Message, state: FSMContext):
             await asyncio.sleep(0.05) # Basic throttle
         except TelegramForbiddenError:
             blocked += 1
-            # Optional: await db.users.delete_one({"user_id": user_id})
         except TelegramRetryAfter as e:
             await asyncio.sleep(e.retry_after)
             try:
@@ -178,6 +189,43 @@ async def admin_broadcast_process(message: types.Message, state: FSMContext):
 
     await message.answer(f"✅ <b>Broadcast Complete</b>\n\nSent: {success}\nBlocked/Failed: {blocked}")
     await state.clear()
+
+# --- NEW ADMIN COMMAND: ADD ITEM ---
+@dp.message(Command("additem"))
+async def admin_add_item(message: types.Message):
+    # Security check: Only Admin can use this
+    if message.from_user.id != Config.ADMIN_ID: return
+
+    try:
+        # Extract arguments after the command
+        args_text = message.text.replace("/additem", "").strip()
+        
+        # Split by "|" separator
+        parts = [p.strip() for p in args_text.split("|")]
+        
+        if len(parts) != 4:
+            raise ValueError("Wrong number of arguments")
+
+        key, name, price, link = parts
+        
+        # Update Database
+        await db.add_category(key, name, price, link)
+        
+        await message.answer(
+            f"✅ <b>Item Added Successfully!</b>\n\n"
+            f"🆔 Key: <code>{key}</code>\n"
+            f"📦 Name: {name}\n"
+            f"💰 Price: {price}\n"
+            f"🔗 Link: <a href='{link}'>Check Link</a>"
+        )
+
+    except ValueError:
+        await message.answer(
+            "⚠️ <b>Incorrect Format</b>\n\n"
+            "Use: <code>/additem key | Name | Price | Link</code>\n\n"
+            "<i>Example:</i>\n"
+            "<code>/additem netflix | Netflix 1 Month | 200 INR | https://t.me/example</code>"
+        )
 
 # ==========================================
 # 🔐 AUTHENTICATION
@@ -205,6 +253,7 @@ async def process_password(message: types.Message, state: FSMContext):
 async def show_main_menu(message: types.Message):
     kb = ReplyKeyboardBuilder()
     kb.button(text="💎 Buy VIP Membership")
+    kb.button(text="👤 My Plan")
     kb.button(text="🆘 Support")
     kb.adjust(2)
     await message.answer(
@@ -213,7 +262,7 @@ async def show_main_menu(message: types.Message):
     )
 
 # ==========================================
-# 🛍️ STORE LOGIC
+# 🛍️ STORE LOGIC & USER PROFILE
 # ==========================================
 @dp.message(F.text == "💎 Buy VIP Membership")
 async def store_categories(message: types.Message):
@@ -227,6 +276,29 @@ async def store_categories(message: types.Message):
     
     builder.adjust(1)
     await message.answer("✨ <b>Select a Plan:</b>", reply_markup=builder.as_markup())
+
+# --- NEW USER COMMAND: MY PLAN ---
+@dp.message(F.text == "👤 My Plan")
+@dp.message(Command("myplan"))
+async def cmd_my_plan(message: types.Message):
+    # Check if user is verified
+    if not await db.is_verified(message.from_user.id):
+        return await message.answer("🔒 You are not logged in.")
+
+    # Fetch purchases
+    purchases = await db.get_user_purchases(message.from_user.id)
+    
+    if not purchases:
+        return await message.answer(f"👤 <b>User:</b> {message.from_user.full_name}\n\n📂 You haven't purchased any plans yet.")
+
+    # Format the list
+    history_text = "\n".join([f"• {p['item']} ({p['date'].strftime('%Y-%m-%d')})" for p in purchases])
+    
+    await message.answer(
+        f"👤 <b>User Profile:</b> {message.from_user.full_name}\n\n"
+        f"🛍️ <b>Purchase History:</b>\n"
+        f"{history_text}"
+    )
 
 @dp.callback_query(F.data.startswith("buy_"))
 async def store_payment_methods(callback: types.CallbackQuery, state: FSMContext):
@@ -358,7 +430,7 @@ async def health_check(request):
     return web.Response(text="Bot is Alive")
 
 async def main():
-    # 1. Web Server for Health Checks (Render/Railway/Heroku support)
+    # 1. Web Server for Health Checks
     app = web.Application()
     app.router.add_get("/", health_check)
     runner = web.AppRunner(app)

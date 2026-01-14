@@ -36,7 +36,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("💎 View VIP Plans", callback_data='view_plans')],
         [InlineKeyboardButton("👤 My Subscription", callback_data='my_sub'),
          InlineKeyboardButton("📞 Contact Support", url="https://t.me/YourAdminUsername")],
-        [InlineKeyboardButton("🔐 Set Passcode", callback_data='set_pass')]
+        [InlineKeyboardButton("🔐 Set Passcode", callback_data='1234')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_photo(

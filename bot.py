@@ -40,7 +40,7 @@ class Config:
         "paypal_link": "https://paypal.me/example",
         "bank_details": "Bank: X\nAcc: 123\nIFSC: X123",
         "categories": {
-            "movie": {"name": "🎬 Movies", "price": "100 INR", "link": "https://t.me/+example"},
+            "Adult": {"name": "🎬 Adult", "price": "100 INR", "link": "https://t.me/+example"},
         }
     }
 
@@ -449,3 +449,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         logging.info("🛑 Bot stopped")
+

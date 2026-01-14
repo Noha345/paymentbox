@@ -1,5 +1,3 @@
-
-
 import logging
 import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup

@@ -137,7 +137,7 @@ async def start_web_server():
 if dp:
     @dp.message(CommandStart())
     async def cmd_start(message: types.Message):
-        if users_col:
+        if users_col is not none:
             await users_col.update_one({"user_id": message.from_user.id}, {"$set": {"username": message.from_user.username}}, upsert=True)
         
         kb = [[types.KeyboardButton(text="💎 Buy VIP Membership"), types.KeyboardButton(text="🆘 Support")]]

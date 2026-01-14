@@ -79,7 +79,7 @@ async def get_settings():
     if not settings:
         settings = {
             "_id": "main_settings",
-            "upi_id": "your-nohasheldendsouza@oksbi",
+            "upi_id": "nohasheldendsouza@oksbi",
             "paypal_link": "paypal.me/example",
             "categories": DEFAULT_CATEGORIES
         }

@@ -6,7 +6,7 @@ import sys
 from aiohttp import web  # Required for Render Web Service
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
-from aiogram.utils.keyboard import InlineKeyboardBuilder # Added for better buttons
+from aiogram.utils.keyboard import InlineKeyboardBuilder 
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -14,16 +14,17 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import qrcode
 
 # ==========================================
-# CONFIGURATION (LOAD FROM ENV VARIABLES)
+# CONFIGURATION 
 # ==========================================
-TOKEN = os.getenv("8084906584:AAHqby3b7gSfHjFw3FXqiOFUhpRAUCrabk4") 
-MONGO_URL = os.getenv("mongodb+srv://paybox:Noha9980@cluster0.xngngqj.mongodb.net/?appName=Cluster0")
-ADMIN_ID = int(os.getenv("8072674531", "0")) 
+# FIX: We use the second argument as a fallback so the bot works immediately
+TOKEN = os.getenv("BOT_TOKEN", "8084906584:AAHqby3b7gSfHjFw3FXqiOFUhpRAUCrabk4") 
+MONGO_URL = os.getenv("MONGO_URL", "mongodb+srv://paybox:Noha9980@cluster0.xngngqj.mongodb.net/?appName=Cluster0")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "8072674531")) 
 PORT = int(os.getenv("PORT", 8080))
 
-# Check if keys are present
+# Check if keys are present (Double check)
 if not TOKEN or not MONGO_URL:
-    sys.exit("Error: BOT_TOKEN or MONGO_URL is missing in Environment Variables.")
+    sys.exit("Error: BOT_TOKEN or MONGO_URL is missing. Please check your configuration.")
 
 # ==========================================
 # DATABASE SETUP
@@ -131,7 +132,6 @@ async def cmd_start(message: types.Message):
         upsert=True
     )
     
-    # These are Reply Buttons (The keyboard at the bottom)
     kb = [
         [types.KeyboardButton(text="💎 Buy VIP Membership"), types.KeyboardButton(text="🆘 Support")]
     ]
@@ -148,15 +148,13 @@ async def show_categories(message: types.Message):
     settings = await get_settings()
     cats = settings.get("categories", {})
     
-    # === GRID LAYOUT FOR "GLASS" BUTTONS ===
+    # === GRID LAYOUT FOR BUTTONS ===
     builder = InlineKeyboardBuilder()
     
     for key, data in cats.items():
-        # Shorter text looks better on grid buttons
         btn_text = f"{data['name']} ({data['price']})"
         builder.button(text=btn_text, callback_data=f"cat_{key}")
     
-    # .adjust(2) puts 2 buttons per row (Grid View)
     builder.adjust(2)
     
     await message.answer(
@@ -177,7 +175,6 @@ async def process_category_selection(callback: types.CallbackQuery, state: FSMCo
 
     await state.update_data(selected_category=cat_key, price=category['price'], cat_name=category['name'])
     
-    # Payment Method Buttons (Stacked vertically for clarity)
     kb = [
         [types.InlineKeyboardButton(text="🇮🇳 Pay via UPI", callback_data="pay_upi")],
         [types.InlineKeyboardButton(text="🌍 Pay via PayPal", callback_data="pay_paypal")]
@@ -294,6 +291,9 @@ async def main():
     
 if __name__ == "__main__":
     try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Bot stopped!")
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logging.info("Bot stopped!")

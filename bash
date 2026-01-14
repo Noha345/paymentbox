@@ -1,3 +1,4 @@
+pip install python-dotenv
 chmod +x init_project.sh
 ./init_project.sh
 #!/bin/bash

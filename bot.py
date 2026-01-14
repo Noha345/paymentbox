@@ -5,7 +5,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # --- CONFIGURATION ---
-TOKEN = "8084906584:AAHqby3b7gSfHjFw3FXqiOFUhpRAUCrabk4"
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 ADMIN_ID = 123456789  # Replace with your Telegram ID
 CHANNEL_LINK = "https://t.me/+YourPrivateLink"
 CHANNEL_ID = -1001234567890 # Your VIP Channel ID

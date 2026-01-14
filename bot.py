@@ -11,7 +11,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 # --- CONFIGURATION ---
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
-ADMIN_UPI = os.environ.get("ADMIN_UPI", "nohasheldendsouza@oksbi")
+ADMIN_UPI = os.environ.get("ADMIN_UPI", "your@upi")
 PAYPAL_LINK = os.environ.get("PAYPAL_LINK", "https://paypal.me/yourname")
 BANK_DETAILS = os.environ.get("BANK_DETAILS", "Bank: XYZ\nAcc: 123456789\nIFSC: BANK0001")
 CHANNEL_LINK = "https://t.me/MyAnimeEnglish"

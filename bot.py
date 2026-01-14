@@ -284,17 +284,13 @@ async def admin_reject(callback: types.CallbackQuery):
 # ==========================================
 # MAIN ENTRY
 # ==========================================
+# Correct Way:
 async def main():
-    await start_web_server()
-    print("Bot is starting polling...")
-    await dp.start_polling(bot)
-    
+    await start_web_server()   # Starts the "Keep Alive" web server
+    await dp.start_polling(bot) # Starts the Telegram connection
+
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logging.info("Bot stopped!")
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logging.info("Bot stopped!")
-    

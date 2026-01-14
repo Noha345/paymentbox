@@ -1,6 +1,6 @@
+import logging
 import asyncio
 import io
-import logging
 import os
 
 from aiohttp import web
@@ -22,6 +22,8 @@ load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URL = os.getenv("MONGO_URL")
 PORT = int(os.getenv("PORT", 8080))
+WEBHOOK_PATH = f"/webhook/{TOKEN}"
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", f"https://yourdomain.com{WEBHOOK_PATH}")
 
 try:
     ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
@@ -122,14 +124,21 @@ def generate_upi_qr(upi_id: str) -> io.BytesIO:
     return bio
 
 # =================================================
-# WEB SERVER (Render keep-alive)
+# WEB SERVER (Webhook + Health)
 # =================================================
 async def health(request):
     return web.Response(text="Bot is running")
 
+async def webhook_handler(request):
+    data = await request.json()
+    update = types.Update(**data)
+    await dp.feed_update(bot, update)
+    return web.Response(text="ok")
+
 async def start_web():
     app = web.Application()
     app.router.add_get("/", health)
+    app.router.add_post(WEBHOOK_PATH, webhook_handler)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
@@ -288,13 +297,4 @@ async def main():
 
     if not bot or not dp:
         while True:
-            await asyncio.sleep(3600)
-
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(
-        bot,
-        allowed_updates=dp.resolve_used_update_types()
-    )
-
-if __name__ == "__main__":
-    asyncio.run(main())
+            await asyncio.sleep(3600

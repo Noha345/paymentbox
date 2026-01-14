@@ -67,7 +67,7 @@ else:
 # DATA & STATES
 # ==========================================
 DEFAULT_CATEGORIES = {
-    "adult": {"name": "🔞 Adult Hub", "price": "10 INR", "link": "https://t.me/example"},
+    "adult": {"name": "🔞 Adult Hub", "price": "10 INR", "link": "https://t.me/MyAnimeEnglish"},
     "movie": {"name": "🎬 Movies & Series", "price": "100 INR", "link": "https://t.me/example"},
     "coding": {"name": "💻 Coding Resources", "price": "200 INR", "link": "https://t.me/example"},
     "gaming": {"name": "🎮 Gaming & Mods", "price": "120 INR", "link": "https://t.me/example"}

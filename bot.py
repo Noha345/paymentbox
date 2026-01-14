@@ -11,7 +11,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 ADMIN_ID = 123456789  # Replace with your actual numeric Telegram ID
 CHANNEL_LINK = "https://t.me/+YourPrivateLink"
-WELCOME_IMAGE = "https://your-image-url.com/welcome.jpg"
+WELCOME_IMAGE = "https://files.catbox.moe/17kvug.jpg"
 QR_CODE_IMAGE = "https://your-image-url.com/qr.jpg"
 
 PLANS = {

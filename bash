@@ -1,9 +1,12 @@
 pip install-r requirements.txt
 pip install python-dotenv
 kill -9 <PID>
-curl https://api.telegram.org/bot<TOKEN>/deleteWebhook
+pkill -f aiogram
+pkill -f python
+curl https://api.telegram.org/bot<TOKEN>/deleteWebhook?drop_pending_updates=true
 chmod +x init_project.sh
 ./init_project.sh
+
 #!/bin/bash
 
 # Define project name

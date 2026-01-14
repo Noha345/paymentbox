@@ -1,8 +1,6 @@
 aiogram
 motor
+aiohttp
+python-dotenv
 qrcode
 pillow
-dnspython
-setuptools
-wheel
-python-dotenv

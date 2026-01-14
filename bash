@@ -1,5 +1,7 @@
 pip install-r requirements.txt
 pip install python-dotenv
+kill -9 <PID>
+curl https://api.telegram.org/bot<TOKEN>/deleteWebhook
 chmod +x init_project.sh
 ./init_project.sh
 #!/bin/bash

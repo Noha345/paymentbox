@@ -47,22 +47,22 @@ logging.basicConfig(level=logging.INFO)
 DEFAULT_CATEGORIES = {
     "adult": {
         "name": "🔞 Adult Hub",
-        "price": "1 INR",
+        "price": "10 INR",
         "link": "https://t.me/+pDemZzNHnsU5MTg1"
     },
     "movie": {
         "name": "🎬 Movies & Series",
-        "price": "100 INR",
+        "price": "0 INR",
         "link": "https://t.me/+ExampleMovieLink"
     },
     "coding": {
         "name": "💻 Coding Resources",
-        "price": "200 INR",
+        "price": "0 INR",
         "link": "https://t.me/+ExampleCodingLink"
     },
     "gaming": {
         "name": "🎮 Gaming & Mods",
-        "price": "120 INR",
+        "price": "0 INR",
         "link": "https://t.me/+ExampleGameLink"
     }
 }

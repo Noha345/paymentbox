@@ -3,10 +3,11 @@ import asyncio
 import io
 import os
 import sys
+import datetime
 
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -22,9 +23,9 @@ load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URL = os.getenv("MONGO_URL")
-# Render provides the PORT automatically
 PORT = int(os.getenv("PORT", 8080))
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
+BOT_PASSWORD = os.getenv("BOT_PASSWORD", "1234")  # Default password if not set
 
 # Admin ID handling
 try:
@@ -40,9 +41,10 @@ logging.basicConfig(level=logging.INFO)
 # =================================================
 settings_col = None
 users_col = None
+purchases_col = None  # New collection for purchase history
 
 async def init_db():
-    global settings_col, users_col
+    global settings_col, users_col, purchases_col
     if not MONGO_URL:
         logging.error("❌ MONGO_URL is missing! Database features will fail.")
         return
@@ -52,6 +54,7 @@ async def init_db():
         db = client["VipBotDB"]
         settings_col = db["settings"]
         users_col = db["users"]
+        purchases_col = db["purchases"] # Store purchase history here
         # Test connection
         await client.admin.command('ping')
         logging.info("✅ MongoDB Connected Successfully")
@@ -82,7 +85,9 @@ DEFAULT_CATEGORIES = {
 # FSM STATES
 # =================================================
 class UserState(StatesGroup):
+    waiting_for_password = State() # State for locking the bot
     waiting_for_proof = State()
+    choosing_payment_method = State() # State to choose UPI, PayPal, or Bank
 
 # =================================================
 # HELPER FUNCTIONS
@@ -97,7 +102,9 @@ async def get_settings():
         if not settings:
             settings = {
                 "_id": "main",
-                "upi_id": "nohasheldendsouza@oksbi", # CHANGE THIS TO YOUR UPI
+                "upi_id": "nohasheldendsouza@oksbi", 
+                "paypal_link": "https://paypal.me/yourusername", # Default PayPal
+                "bank_details": "Bank Name: SBI\nAcc No: 1234567890\nIFSC: SBIN0001234", # Default Bank
                 "categories": DEFAULT_CATEGORIES
             }
             await settings_col.insert_one(settings)
@@ -115,6 +122,12 @@ def generate_upi_qr(upi_id: str) -> io.BytesIO:
     bio.seek(0)
     return bio
 
+async def is_user_unlocked(user_id: int) -> bool:
+    """Checks if the user has entered the correct password."""
+    if users_col is None: return False
+    user = await users_col.find_one({"user_id": user_id})
+    return user and user.get("is_unlocked", False)
+
 # =================================================
 # WEB SERVER (REQUIRED FOR RENDER)
 # =================================================
@@ -131,20 +144,42 @@ async def start_web_server():
     logging.info(f"🌍 Web Server running on port {PORT}")
 
 # =================================================
-# BOT HANDLERS
+# BOT HANDLERS - AUTHENTICATION
+# =================================================
+
+@dp.message(Command("login"))
+async def login_cmd(message: types.Message, state: FSMContext):
+    await message.answer("🔒 Please enter the bot password to access:")
+    await state.set_state(UserState.waiting_for_password)
+
+@dp.message(UserState.waiting_for_password)
+async def check_password(message: types.Message, state: FSMContext):
+    if message.text == BOT_PASSWORD:
+        if users_col is not None:
+             await users_col.update_one(
+                {"user_id": message.from_user.id},
+                {"$set": {"is_unlocked": True, "username": message.from_user.username}},
+                upsert=True
+            )
+        await message.answer("✅ Password Correct! You now have access.\nType /start to begin.")
+        await state.clear()
+    else:
+        await message.answer("❌ Incorrect Password. Try again or type /login to restart.")
+
+# Check for access before every other command
+async def check_access_middleware(message: types.Message):
+    if not await is_user_unlocked(message.from_user.id):
+        await message.answer("🔒 This bot is password protected.\nType /login to enter the password.")
+        return False
+    return True
+
+# =================================================
+# BOT HANDLERS - MAIN
 # =================================================
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message):
-    # Safe DB update
-    if users_col is not None:
-        try:
-            await users_col.update_one(
-                {"user_id": message.from_user.id},
-                {"$set": {"username": message.from_user.username}},
-                upsert=True
-            )
-        except Exception as e:
-            logging.error(f"DB Error on start: {e}")
+    # Check Access
+    if not await check_access_middleware(message): return
 
     kb = [[
         types.KeyboardButton(text="💎 Buy VIP Membership"),
@@ -158,11 +193,11 @@ async def start_cmd(message: types.Message):
 
 @dp.message(F.text == "💎 Buy VIP Membership")
 async def show_categories(message: types.Message):
-    settings = await get_settings()
+    if not await check_access_middleware(message): return
     
-    # If DB is down or settings failed
+    settings = await get_settings()
     if not settings:
-        return await message.answer("⚠️ System is initializing or Database is down. Try again in 1 minute.")
+        return await message.answer("⚠️ System is initializing. Try again in 1 minute.")
 
     builder = InlineKeyboardBuilder()
     for k, v in settings["categories"].items():
@@ -182,18 +217,48 @@ async def choose_category(cb: types.CallbackQuery, state: FSMContext):
     cat = settings["categories"][key]
     await state.update_data(category=key)
 
-    qr = generate_upi_qr(settings["upi_id"])
-    
-    await cb.message.answer_photo(
-        types.BufferedInputFile(qr.getvalue(), "upi.png"),
-        caption=(
-            f"💳 **Category:** {cat['name']}\n"
-            f"💰 **Price:** {cat['price']}\n\n"
-            f"1️⃣ Scan the QR to pay.\n"
-            f"2️⃣ Send the screenshot here."
-        ),
+    # Ask for Payment Method
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🇮🇳 UPI (QR Code)", callback_data="pay:upi")
+    builder.button(text="🌍 PayPal", callback_data="pay:paypal")
+    builder.button(text="🏦 Bank Transfer", callback_data="pay:bank")
+    builder.adjust(1)
+
+    await cb.message.edit_text(
+        f"**Selected Plan:** {cat['name']}\n"
+        f"**Price:** {cat['price']}\n\n"
+        f"💳 Please select a payment method:",
+        reply_markup=builder.as_markup(),
         parse_mode="Markdown"
     )
+    await state.set_state(UserState.choosing_payment_method)
+
+@dp.callback_query(F.data.startswith("pay:"))
+async def send_payment_details(cb: types.CallbackQuery, state: FSMContext):
+    method = cb.data.split(":")[1]
+    settings = await get_settings()
+    
+    text = ""
+    photo = None
+    
+    if method == "upi":
+        qr = generate_upi_qr(settings["upi_id"])
+        photo = types.BufferedInputFile(qr.getvalue(), "upi.png")
+        text = f"**Pay via UPI**\nUPI ID: `{settings['upi_id']}`\n\nScan the QR code to pay."
+        
+    elif method == "paypal":
+        text = f"**Pay via PayPal**\nLink: {settings.get('paypal_link', 'Not Available')}\n\nClick the link to pay."
+        
+    elif method == "bank":
+        text = f"**Pay via Bank Transfer**\n\n{settings.get('bank_details', 'Not Available')}\n\nPlease transfer the amount to this account."
+
+    text += "\n\n📸 **After payment, send the screenshot here.**"
+
+    if photo:
+        await cb.message.answer_photo(photo, caption=text, parse_mode="Markdown")
+    else:
+        await cb.message.answer(text, parse_mode="Markdown")
+
     await state.set_state(UserState.waiting_for_proof)
     await cb.answer()
 
@@ -219,7 +284,7 @@ async def receive_proof(message: types.Message, state: FSMContext):
             message.photo[-1].file_id,
             caption=(
                 f"🧾 **New Payment Proof**\n"
-                f"👤 User: {message.from_user.id}\n"
+                f"👤 User: {message.from_user.id} (@{message.from_user.username})\n"
                 f"📦 Plan: {cat['name']}\n"
                 f"💰 Price: {cat['price']}"
             ),
@@ -243,16 +308,28 @@ async def approve(cb: types.CallbackQuery):
     cat = settings["categories"].get(cat_key)
 
     try:
+        # 1. Send Link to User
         await bot.send_message(
             user_id,
             f"✅ **Payment Approved!**\n\nHere is your link:\n{cat['link']}",
             parse_mode="Markdown"
         )
+        
+        # 2. Store Purchase History
+        if purchases_col is not None:
+            await purchases_col.insert_one({
+                "user_id": user_id,
+                "category": cat["name"],
+                "price": cat["price"],
+                "date": datetime.datetime.utcnow(),
+                "status": "approved"
+            })
+            
         await cb.message.edit_caption(caption=cb.message.caption + "\n\n✅ **APPROVED**")
     except Exception as e:
         await cb.answer(f"Error: {e}", show_alert=True)
 
-    await cb.answer("Approved")
+    await cb.answer("User Notified")
 
 @dp.callback_query(F.data.startswith("reject:"))
 async def reject(cb: types.CallbackQuery):
@@ -272,13 +349,8 @@ async def reject(cb: types.CallbackQuery):
 # MAIN ENTRY POINT
 # =================================================
 async def main():
-    # 1. Connect to Database
     await init_db()
-    
-    # 2. Start Web Server (Keep Render Alive)
     await start_web_server()
-
-    # 3. Start Bot Polling
     logging.info("🚀 Bot started polling...")
     await dp.start_polling(bot)
 
@@ -287,5 +359,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("Bot stopped.")
-        
         

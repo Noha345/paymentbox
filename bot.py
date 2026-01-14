@@ -24,10 +24,10 @@ load_dotenv()
 # ==========================================
 # 🛑 ERROR WAS HERE: We now ask for the "KEY", not the "VALUE"
 TOKEN = os.getenv("BOT_TOKEN")
-MONGO_URL = os.getenv("mongodb+srv://paybox:Noha9980@cluster0.xngngqj.mongodb.net/?appName=Cluster0")
+MONGO_URL = os.getenv("MONGO_URL")
 
 # Admin ID handling
-admin_id_str = os.getenv("ADMIN_ID", "8072674531")
+admin_id_str = os.getenv("ADMIN_ID", "0")
 try:
     ADMIN_ID = int(admin_id_str)
 except ValueError:

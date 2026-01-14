@@ -14,9 +14,9 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 import qrcode
 
-# -------------------------------------------------
-# ENV
-# -------------------------------------------------
+# =================================================
+# ENVIRONMENT
+# =================================================
 load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN")
@@ -30,9 +30,9 @@ except ValueError:
 
 logging.basicConfig(level=logging.INFO)
 
-# -------------------------------------------------
-# DB
-# -------------------------------------------------
+# =================================================
+# DATABASE
+# =================================================
 settings_col = None
 users_col = None
 
@@ -42,19 +42,19 @@ if MONGO_URL:
         db = client["VipBotDB"]
         settings_col = db["settings"]
         users_col = db["users"]
-        logging.info("MongoDB connected")
+        logging.info("✅ MongoDB connected")
     except Exception as e:
-        logging.error(f"Mongo error: {e}")
+        logging.error(f"❌ Mongo error: {e}")
 
-# -------------------------------------------------
+# =================================================
 # BOT
-# -------------------------------------------------
+# =================================================
 bot = Bot(token=TOKEN) if TOKEN else None
 dp = Dispatcher(storage=MemoryStorage()) if TOKEN else None
 
-# -------------------------------------------------
-# CONSTANTS
-# -------------------------------------------------
+# =================================================
+# CATEGORIES
+# =================================================
 DEFAULT_CATEGORIES = {
     "adult": {
         "name": "🔞 Adult Hub",
@@ -65,18 +65,38 @@ DEFAULT_CATEGORIES = {
         "name": "🎬 Movies & Series",
         "price": "100 INR",
         "link": "https://t.me/+ExampleLink"
+    },
+    "coding": {
+        "name": "💻 Coding Courses",
+        "price": "199 INR",
+        "link": "https://t.me/+ExampleLink"
+    },
+    "gaming": {
+        "name": "🎮 Gaming Mods",
+        "price": "149 INR",
+        "link": "https://t.me/+ExampleLink"
+    },
+    "ebooks": {
+        "name": "📚 Premium E-Books",
+        "price": "99 INR",
+        "link": "https://t.me/+ExampleLink"
+    },
+    "trading": {
+        "name": "📈 Trading Signals",
+        "price": "299 INR",
+        "link": "https://t.me/+ExampleLink"
     }
 }
 
-# -------------------------------------------------
+# =================================================
 # FSM
-# -------------------------------------------------
+# =================================================
 class UserState(StatesGroup):
     waiting_for_proof = State()
 
-# -------------------------------------------------
+# =================================================
 # HELPERS
-# -------------------------------------------------
+# =================================================
 async def get_settings():
     if not settings_col:
         return None
@@ -101,11 +121,11 @@ def generate_upi_qr(upi_id: str) -> io.BytesIO:
     bio.seek(0)
     return bio
 
-# -------------------------------------------------
+# =================================================
 # WEB SERVER (Render keep-alive)
-# -------------------------------------------------
+# =================================================
 async def health(request):
-    return web.Response(text="OK")
+    return web.Response(text="Bot is running")
 
 async def start_web():
     app = web.Application()
@@ -115,9 +135,9 @@ async def start_web():
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
 
-# -------------------------------------------------
+# =================================================
 # HANDLERS
-# -------------------------------------------------
+# =================================================
 if dp:
 
     @dp.message(CommandStart())
@@ -133,8 +153,9 @@ if dp:
             types.KeyboardButton(text="💎 Buy VIP Membership"),
             types.KeyboardButton(text="🆘 Support")
         ]]
+
         await message.answer(
-            f"👋 Hello {message.from_user.first_name}",
+            f"👋 Hello {message.from_user.first_name}!\n\nWelcome to the VIP Store.",
             reply_markup=types.ReplyKeyboardMarkup(
                 keyboard=kb, resize_keyboard=True
             )
@@ -144,18 +165,19 @@ if dp:
     async def show_categories(message: types.Message):
         settings = await get_settings()
         if not settings:
-            return await message.answer("Temporary issue. Try later.")
+            return await message.answer("⚠️ Please try again later.")
 
         builder = InlineKeyboardBuilder()
         for k, v in settings["categories"].items():
             builder.button(
-                text=f"{v['name']} ({v['price']})",
+                text=f"{v['name']} — {v['price']}",
                 callback_data=f"cat:{k}"
             )
-        builder.adjust(1)
+
+        builder.adjust(2)
 
         await message.answer(
-            "Select a category:",
+            "✨ Choose a VIP Category:",
             reply_markup=builder.as_markup()
         )
 
@@ -166,19 +188,22 @@ if dp:
         cat = settings["categories"].get(key)
 
         if not cat:
-            return await cb.answer("Not found", show_alert=True)
+            return await cb.answer("Category not found", show_alert=True)
 
         await state.update_data(category=key)
-        await state.set_state(UserState.waiting_for_proof)
 
         qr = generate_upi_qr(settings["upi_id"])
         await cb.message.answer_photo(
             types.BufferedInputFile(qr.getvalue(), "upi.png"),
             caption=(
-                f"💳 Pay {cat['price']}\n\n"
+                f"💳 **Category:** {cat['name']}\n"
+                f"💰 **Price:** {cat['price']}\n\n"
                 f"After payment, send screenshot here."
-            )
+            ),
+            parse_mode="Markdown"
         )
+
+        await state.set_state(UserState.waiting_for_proof)
         await cb.answer()
 
     @dp.message(UserState.waiting_for_proof)
@@ -186,32 +211,45 @@ if dp:
         data = await state.get_data()
         cat_key = data.get("category")
 
-        if not cat_key:
-            return await message.answer("Session expired.")
+        settings = await get_settings()
+        cat = settings["categories"].get(cat_key)
+
+        kb = [[
+            types.InlineKeyboardButton(
+                text="✅ Approve",
+                callback_data=f"approve:{message.from_user.id}:{cat_key}"
+            ),
+            types.InlineKeyboardButton(
+                text="❌ Reject",
+                callback_data=f"reject:{message.from_user.id}"
+            )
+        ]]
 
         if ADMIN_ID:
-            kb = [[
-                types.InlineKeyboardButton(
-                    text="✅ Approve",
-                    callback_data=f"approve:{message.from_user.id}:{cat_key}"
-                ),
-                types.InlineKeyboardButton(
-                    text="❌ Reject",
-                    callback_data=f"reject:{message.from_user.id}"
-                )
-            ]]
-
             if message.photo:
                 await bot.send_photo(
                     ADMIN_ID,
                     message.photo[-1].file_id,
-                    caption=f"Proof from {message.from_user.id}",
+                    caption=(
+                        f"🧾 Payment Proof\n"
+                        f"👤 User: {message.from_user.id}\n"
+                        f"📦 Category: {cat['name']}\n"
+                        f"💰 Price: {cat['price']}"
+                    ),
+                    reply_markup=types.InlineKeyboardMarkup(
+                        inline_keyboard=kb
+                    )
+                )
+            else:
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"🧾 Text Proof\nUser: {message.from_user.id}",
                     reply_markup=types.InlineKeyboardMarkup(
                         inline_keyboard=kb
                     )
                 )
 
-        await message.answer("Proof sent. Please wait.")
+        await message.answer("✅ Proof sent. Please wait for approval.")
         await state.clear()
 
     @dp.callback_query(F.data.startswith("approve:"))
@@ -223,11 +261,11 @@ if dp:
         user_id = int(user_id)
 
         settings = await get_settings()
-        cat = settings["categories"].get(cat_key)
+        cat = settings["categories"][cat_key]
 
         await bot.send_message(
             user_id,
-            f"✅ Approved!\n\n{cat['link']}",
+            f"✅ **Payment Approved!**\n\nHere is your access:\n{cat['link']}",
             parse_mode="Markdown"
         )
 
@@ -239,12 +277,12 @@ if dp:
             return await cb.answer("Unauthorized", show_alert=True)
 
         user_id = int(cb.data.split(":")[1])
-        await bot.send_message(user_id, "❌ Payment rejected.")
+        await bot.send_message(user_id, "❌ Payment rejected. Please contact support.")
         await cb.answer("Rejected")
 
-# -------------------------------------------------
+# =================================================
 # MAIN
-# -------------------------------------------------
+# =================================================
 async def main():
     await start_web()
 

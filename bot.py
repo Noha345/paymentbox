@@ -17,7 +17,7 @@ import qrcode
 # CONFIGURATION 
 # ==========================================
 # FIX: We use the second argument as a fallback so the bot works immediately
-TOKEN = os.getenv("BOT_TOKEN", "8084906584:AAHqby3b7gSfHjFw3FXqiOFUhpRAUCrabk4") 
+TOKEN = os.getenv("BOT_TOKEN", "8084906584:AAHTn6qNxYIo46ZXQOonpS4YOBIPU7GThWg") 
 MONGO_URL = os.getenv("MONGO_URL", "mongodb+srv://paybox:Noha9980@cluster0.xngngqj.mongodb.net/?appName=Cluster0")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "8072674531")) 
 PORT = int(os.getenv("PORT", 8080))

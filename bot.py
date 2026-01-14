@@ -2,6 +2,7 @@ import logging
 import asyncio
 import io
 import os
+import sys
 
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
@@ -21,9 +22,13 @@ load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URL = os.getenv("MONGO_URL")
+# Render sets the PORT variable automatically
 PORT = int(os.getenv("PORT", 8080))
+# Render External URL (Required for Webhook)
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL") 
 WEBHOOK_PATH = f"/webhook/{TOKEN}"
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", f"https://yourdomain.com{WEBHOOK_PATH}")
+# If RENDER_EXTERNAL_URL exists, use it; otherwise use placeholder
+WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}" if RENDER_EXTERNAL_URL else f"https://your-app-name.onrender.com{WEBHOOK_PATH}"
 
 try:
     ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
@@ -38,16 +43,6 @@ logging.basicConfig(level=logging.INFO)
 settings_col = None
 users_col = None
 
-if MONGO_URL:
-    try:
-        client = AsyncIOMotorClient(MONGO_URL)
-        db = client["VipBotDB"]
-        settings_col = db["settings"]
-        users_col = db["users"]
-        logging.info("✅ MongoDB connected")
-    except Exception as e:
-        logging.error(f"❌ Mongo error: {e}")
-
 # =================================================
 # BOT
 # =================================================
@@ -55,13 +50,13 @@ bot = Bot(token=TOKEN) if TOKEN else None
 dp = Dispatcher(storage=MemoryStorage()) if TOKEN else None
 
 # =================================================
-# CATEGORIES
+# CATEGORIES (Defaults)
 # =================================================
 DEFAULT_CATEGORIES = {
     "adult": {
         "name": "🔞 Adult Hub",
         "price": "10 INR",
-        "link": "https://t.me/+pDemZzNHnsU5MTg1"
+        "link": "https://t.me/+ExampleLink"
     },
     "movie": {
         "name": "🎬 Movies & Series",
@@ -77,16 +72,6 @@ DEFAULT_CATEGORIES = {
         "name": "🎮 Gaming Mods",
         "price": "149 INR",
         "link": "https://t.me/+ExampleLink"
-    },
-    "ebooks": {
-        "name": "📚 Premium E-Books",
-        "price": "99 INR",
-        "link": "https://t.me/+ExampleLink"
-    },
-    "trading": {
-        "name": "📈 Trading Signals",
-        "price": "299 INR",
-        "link": "https://t.me/+ExampleLink"
     }
 }
 
@@ -99,6 +84,18 @@ class UserState(StatesGroup):
 # =================================================
 # HELPERS
 # =================================================
+async def init_db():
+    global settings_col, users_col
+    if MONGO_URL:
+        try:
+            client = AsyncIOMotorClient(MONGO_URL)
+            db = client["VipBotDB"]
+            settings_col = db["settings"]
+            users_col = db["users"]
+            logging.info("✅ MongoDB connected")
+        except Exception as e:
+            logging.error(f"❌ Mongo error: {e}")
+
 async def get_settings():
     if not settings_col:
         return None
@@ -111,11 +108,10 @@ async def get_settings():
             "categories": DEFAULT_CATEGORIES
         }
         await settings_col.insert_one(settings)
-
     return settings
 
-
 def generate_upi_qr(upi_id: str) -> io.BytesIO:
+    # Generates a standard UPI QR code string
     upi_url = f"upi://pay?pa={upi_id}&pn=VIP&cu=INR"
     qr = qrcode.make(upi_url)
     bio = io.BytesIO()
@@ -124,16 +120,20 @@ def generate_upi_qr(upi_id: str) -> io.BytesIO:
     return bio
 
 # =================================================
-# WEB SERVER (Webhook + Health)
+# WEB SERVER
 # =================================================
 async def health(request):
     return web.Response(text="Bot is running")
 
 async def webhook_handler(request):
-    data = await request.json()
-    update = types.Update(**data)
-    await dp.feed_update(bot, update)
-    return web.Response(text="ok")
+    try:
+        data = await request.json()
+        update = types.Update(**data)
+        await dp.feed_update(bot, update)
+        return web.Response(text="ok")
+    except Exception as e:
+        logging.error(f"Webhook error: {e}")
+        return web.Response(text="error", status=500)
 
 async def start_web():
     app = web.Application()
@@ -143,12 +143,12 @@ async def start_web():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
+    logging.info(f"🌍 Web server running on port {PORT}")
 
 # =================================================
 # HANDLERS
 # =================================================
 if dp:
-
     @dp.message(CommandStart())
     async def start_cmd(message: types.Message):
         if users_col is not None:
@@ -162,19 +162,16 @@ if dp:
             types.KeyboardButton(text="💎 Buy VIP Membership"),
             types.KeyboardButton(text="🆘 Support")
         ]]
-
         await message.answer(
             f"👋 Hello {message.from_user.first_name}!\n\nWelcome to the VIP Store.",
-            reply_markup=types.ReplyKeyboardMarkup(
-                keyboard=kb, resize_keyboard=True
-            )
+            reply_markup=types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
         )
 
     @dp.message(F.text == "💎 Buy VIP Membership")
     async def show_categories(message: types.Message):
         settings = await get_settings()
         if not settings:
-            return await message.answer("⚠️ Please try again later.")
+            return await message.answer("⚠️ Database not ready. Please wait a moment.")
 
         builder = InlineKeyboardBuilder()
         for k, v in settings["categories"].items():
@@ -182,13 +179,8 @@ if dp:
                 text=f"{v['name']} — {v['price']}",
                 callback_data=f"cat:{k}"
             )
-
-        builder.adjust(2)
-
-        await message.answer(
-            "✨ Choose a VIP Category:",
-            reply_markup=builder.as_markup()
-        )
+        builder.adjust(1)
+        await message.answer("✨ Choose a VIP Category:", reply_markup=builder.as_markup())
 
     @dp.callback_query(F.data.startswith("cat:"))
     async def choose_category(cb: types.CallbackQuery, state: FSMContext):
@@ -207,58 +199,48 @@ if dp:
             caption=(
                 f"💳 **Category:** {cat['name']}\n"
                 f"💰 **Price:** {cat['price']}\n\n"
-                f"After payment, send screenshot here."
+                f"1. Scan QR to pay.\n"
+                f"2. Send the screenshot here."
             ),
             parse_mode="Markdown"
         )
-
         await state.set_state(UserState.waiting_for_proof)
         await cb.answer()
 
     @dp.message(UserState.waiting_for_proof)
     async def receive_proof(message: types.Message, state: FSMContext):
+        # Check if user sent a photo
+        if not message.photo:
+            return await message.answer("⚠️ Please send a screenshot (Photo) of the payment.")
+
         data = await state.get_data()
         cat_key = data.get("category")
-
         settings = await get_settings()
         cat = settings["categories"].get(cat_key)
 
+        # Buttons for Admin
         kb = [[
-            types.InlineKeyboardButton(
-                text="✅ Approve",
-                callback_data=f"approve:{message.from_user.id}:{cat_key}"
-            ),
-            types.InlineKeyboardButton(
-                text="❌ Reject",
-                callback_data=f"reject:{message.from_user.id}"
-            )
+            types.InlineKeyboardButton(text="✅ Approve", callback_data=f"approve:{message.from_user.id}:{cat_key}"),
+            types.InlineKeyboardButton(text="❌ Reject", callback_data=f"reject:{message.from_user.id}")
         ]]
 
         if ADMIN_ID:
-            if message.photo:
-                await bot.send_photo(
-                    ADMIN_ID,
-                    message.photo[-1].file_id,
-                    caption=(
-                        f"🧾 Payment Proof\n"
-                        f"👤 User: {message.from_user.id}\n"
-                        f"📦 Category: {cat['name']}\n"
-                        f"💰 Price: {cat['price']}"
-                    ),
-                    reply_markup=types.InlineKeyboardMarkup(
-                        inline_keyboard=kb
-                    )
-                )
-            else:
-                await bot.send_message(
-                    ADMIN_ID,
-                    f"🧾 Text Proof\nUser: {message.from_user.id}",
-                    reply_markup=types.InlineKeyboardMarkup(
-                        inline_keyboard=kb
-                    )
-                )
-
-        await message.answer("✅ Proof sent. Please wait for approval.")
+            await bot.send_photo(
+                ADMIN_ID,
+                message.photo[-1].file_id,
+                caption=(
+                    f"🧾 **New Payment Proof**\n"
+                    f"👤 User ID: `{message.from_user.id}`\n"
+                    f"📦 Category: {cat['name']}\n"
+                    f"💰 Price: {cat['price']}"
+                ),
+                reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb),
+                parse_mode="Markdown"
+            )
+            await message.answer("✅ **Proof Sent!**\nPlease wait for admin approval.")
+        else:
+            await message.answer("⚠️ Admin ID not set. Contact support manually.")
+        
         await state.clear()
 
     @dp.callback_query(F.data.startswith("approve:"))
@@ -268,17 +250,20 @@ if dp:
 
         _, user_id, cat_key = cb.data.split(":")
         user_id = int(user_id)
-
         settings = await get_settings()
-        cat = settings["categories"][cat_key]
+        cat = settings["categories"].get(cat_key)
 
-        await bot.send_message(
-            user_id,
-            f"✅ **Payment Approved!**\n\nHere is your access:\n{cat['link']}",
-            parse_mode="Markdown"
-        )
+        try:
+            await bot.send_message(
+                user_id,
+                f"✅ **Payment Approved!**\n\nHere is your link:\n{cat['link']}",
+                parse_mode="Markdown"
+            )
+            await cb.message.edit_caption(caption=cb.message.caption + "\n\n✅ **APPROVED**")
+        except Exception as e:
+            await cb.message.answer(f"Error sending link: {e}")
 
-        await cb.answer("Approved")
+        await cb.answer("User Notified")
 
     @dp.callback_query(F.data.startswith("reject:"))
     async def reject(cb: types.CallbackQuery):
@@ -286,15 +271,42 @@ if dp:
             return await cb.answer("Unauthorized", show_alert=True)
 
         user_id = int(cb.data.split(":")[1])
-        await bot.send_message(user_id, "❌ Payment rejected. Please contact support.")
-        await cb.answer("Rejected")
+        try:
+            await bot.send_message(user_id, "❌ **Payment Rejected.**\nPlease contact support if this is an error.", parse_mode="Markdown")
+            await cb.message.edit_caption(caption=cb.message.caption + "\n\n❌ **REJECTED**")
+        except Exception:
+            pass
+            
+        await cb.answer("User Notified")
 
 # =================================================
-# MAIN
+# MAIN ENTRY POINT
 # =================================================
 async def main():
+    # 1. Initialize DB
+    await init_db()
+    
+    # 2. Start Web Server
     await start_web()
 
-    if not bot or not dp:
-        while True:
-            await asyncio.sleep(3600)
+    # 3. Set Webhook (Only if bot is valid)
+    if bot:
+        # We delete old updates to avoid flooding on startup
+        await bot.delete_webhook(drop_pending_updates=True)
+        # Set new webhook
+        logging.info(f"🔗 Setting webhook to: {WEBHOOK_URL}")
+        await bot.set_webhook(WEBHOOK_URL)
+        
+    # 4. Keep script running forever
+    logging.info("🚀 Bot is running...")
+    await asyncio.Event().wait()
+
+if __name__ == "__main__":
+    if not TOKEN:
+        print("Error: BOT_TOKEN is missing")
+    else:
+        try:
+            asyncio.run(main())
+        except KeyboardInterrupt:
+            print("Bot stopped.")
+            

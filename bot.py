@@ -142,7 +142,7 @@ if dp:
 
     @dp.message(CommandStart())
     async def start_cmd(message: types.Message):
-        if users_col:
+        if users_col is not None:
             await users_col.update_one(
                 {"user_id": message.from_user.id},
                 {"$set": {"username": message.from_user.username}},

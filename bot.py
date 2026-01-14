@@ -105,7 +105,7 @@ async def handle_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if method == "upi":
         upi_uri = f"upi://pay?pa={ADMIN_UPI}&pn=Admin&am={amount}&cu=INR"
-        qr = segno.make(upi_uri)
+        qr = segno.make(upi_uri) # Auto-QR Generation
         out = io.BytesIO()
         qr.save(out, kind='png', scale=10)
         out.seek(0)
@@ -116,6 +116,18 @@ async def handle_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(f"🏦 <b>Bank Transfer:</b>\n{BANK_DETAILS}\nSend screenshot after paying.")
 
 # --- ADMIN FUNCTIONS ---
+
+@admin_only
+async def set_new_passcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Allows Admin to update passcode for the session via /setpass [new_code]."""
+    if not context.args:
+        await update.message.reply_text("Usage: /setpass [new_password]")
+        return
+
+    new_code = context.args[0]
+    global BOT_PASSCODE
+    BOT_PASSCODE = new_code # Updates in memory
+    await update.message.reply_text(f"✅ Passcode updated successfully to: {new_code}")
 
 @admin_only
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -187,6 +199,7 @@ def main():
     application.add_handler(CommandHandler("unban", unban))
     application.add_handler(CommandHandler("warn", warn))
     application.add_handler(CommandHandler("addvip", addvip))
+    application.add_handler(CommandHandler("setpass", set_new_passcode)) # New Handler
     
     # 3. Callback Handlers
     application.add_handler(CallbackQueryHandler(view_plans, pattern='^view_plans$'))
@@ -202,4 +215,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-    

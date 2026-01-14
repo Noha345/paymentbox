@@ -343,14 +343,17 @@ async def main():
     await start_web_server()
 
     if bot and dp:
-        await bot.delete_webhook(drop_pending_updates=True)
-        print("🚀 Bot started polling")
-        await dp.start_polling(bot)
+        async def main():
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+executor.start_polling(dp, skip_updates=True)
+
     else:
         print("❌ Bot not started (missing env vars)")
         while True:
             await asyncio.sleep(3600)
 
 if __name__ == "__main__":
+    import asyncio
     asyncio.run(main())
     

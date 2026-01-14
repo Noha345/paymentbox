@@ -47,8 +47,8 @@ logging.basicConfig(level=logging.INFO)
 DEFAULT_CATEGORIES = {
     "adult": {
         "name": "🔞 Adult Hub",
-        "price": "150 INR",
-        "link": "https://t.me/+ExampleAdultLink"
+        "price": "1 INR",
+        "link": "https://t.me/+pDemZzNHnsU5MTg1"
     },
     "movie": {
         "name": "🎬 Movies & Series",

@@ -1,200 +1,236 @@
-import os
-import io
-import datetime
-import threading
-import http.server
-import socketserver
-import segno
+import os, io, asyncio, datetime
+from functools import wraps
 from pymongo import MongoClient
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+import segno
 
-# --- CONFIGURATION ---
-TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
-MONGO_URI = os.environ.get("MONGO_URI") or os.environ.get("MANGO_URI")
-ADMIN_UPI = os.environ.get("ADMIN_UPI", "yourname@upi")
-WELCOME_IMAGE = "https://files.catbox.moe/17kvug.jpg"
-BOT_PASSCODE = os.environ.get("BOT_PASSCODE", "1234")
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup
+)
+from telegram.ext import (
+    Application, CommandHandler, CallbackQueryHandler,
+    MessageHandler, ContextTypes, filters
+)
 
-# --- DATABASE SETUP ---
-try:
-    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-    db = client['payment_bot']
-    users_col = db['users']
-    cats_col = db['categories']
-    client.admin.command('ping') 
-except Exception as e:
-    print(f"❌ DB Error: {e}")
-    db = None
+# ================= CONFIG =================
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
+MONGO_URI = os.getenv("MONGO_URI")
+BOT_PASSCODE = os.getenv("BOT_PASSCODE")
 
-# --- ADMIN DECORATOR ---
+ADMIN_UPI = os.getenv("ADMIN_UPI")
+PAYPAL_LINK = os.getenv("PAYPAL_LINK")
+BANK_DETAILS = os.getenv("BANK_DETAILS")
+WELCOME_IMAGE = os.getenv("WELCOME_IMAGE")
+
+# ================= DB =====================
+client = MongoClient(MONGO_URI)
+db = client.vipbot
+users = db.users
+cats = db.categories
+
+# ================= HELPERS =================
 def admin_only(func):
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    @wraps(func)
+    async def wrapper(update: Update, context):
         if update.effective_user.id != ADMIN_ID:
-            await update.message.reply_text("❌ Access Denied.")
             return
         return await func(update, context)
     return wrapper
 
-# --- USER FUNCTIONS ---
+def glass(btns):
+    return InlineKeyboardMarkup(btns)
 
+# ================= START ===================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if db is None:
-        target = update.callback_query.message if update.callback_query else update.message
-        await target.reply_text("⚠️ Database Offline.")
+    u = update.effective_user
+
+    users.update_one(
+        {"user_id": u.id},
+        {"$setOnInsert": {
+            "name": u.full_name,
+            "is_vip": False,
+            "warnings": 0,
+            "banned": False
+        }},
+        upsert=True
+    )
+
+    if users.find_one({"user_id": u.id, "banned": True}):
         return
 
-    user = update.effective_user
-    db_user = users_col.find_one({"user_id": user.id})
-    
-    # Save user to DB if new
-    if not db_user:
-        db_user = {"user_id": user.id, "full_name": user.full_name, "is_vip": False, "is_banned": False}
-        users_col.insert_one(db_user)
-
-    # CHECK BAN STATUS
-    if db_user.get("is_banned"):
-        await (update.callback_query.message if update.callback_query else update.message).reply_text("🚫 You are banned from using this bot.")
+    if not context.user_data.get("auth") and u.id != ADMIN_ID:
+        await update.message.reply_text("🔐 Enter bot password:")
         return
 
-    if not context.user_data.get('is_auth', False) and user.id != ADMIN_ID:
-        await (update.callback_query.message if update.callback_query else update.message).reply_text("🔐 Enter passcode:")
-        return
+    kb = [
+        [InlineKeyboardButton("💎 View VIP Plans", callback_data="plans")],
+        [InlineKeyboardButton("📞 Contact Admin", url=f"tg://user?id={ADMIN_ID}")]
+    ]
 
-    categories = list(cats_col.find())
-    keyboard = [[InlineKeyboardButton(f"📂 {cat['name']}", callback_data=f"cat_{cat['name']}")] for cat in categories]
-    
-    msg = "<b>Welcome!</b> Select a category to see VIP plans:"
-    if update.callback_query:
-        await update.callback_query.edit_message_caption(caption=msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
-    else:
-        await update.message.reply_photo(photo=WELCOME_IMAGE, caption=msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+    await update.message.reply_photo(
+        photo=WELCOME_IMAGE,
+        caption=f"👋 Welcome *{u.full_name}*\n🆔 `{u.id}`",
+        reply_markup=glass(kb),
+        parse_mode="Markdown"
+    )
 
-async def check_passcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================= PASSCODE =================
+async def passcode(update: Update, context):
     if update.message.text == BOT_PASSCODE:
-        context.user_data['is_auth'] = True
-        await update.message.reply_text("✅ Access Granted! Use /start")
+        context.user_data["auth"] = True
+        await update.message.reply_text("✅ Access granted. Use /start")
     else:
-        await update.message.reply_text("❌ Incorrect passcode.")
+        await warn(update, context)
 
-# --- ADMIN: BROADCAST, BAN, UNBAN COMMANDS ---
+# ================= WARN SYSTEM =============
+async def warn(update, context):
+    u = users.find_one({"user_id": update.effective_user.id})
+    w = u.get("warnings", 0) + 1
+    users.update_one({"user_id": u["user_id"]}, {"$set": {"warnings": w}})
 
-@admin_only
-async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Sends a global alert to every registered user."""
-    if not context.args:
-        await update.message.reply_text("❌ Usage: `/broadcast Hello Users`")
-        return
-    msg = " ".join(context.args)
-    users = users_col.find({"is_banned": False})
-    count = 0
-    for u in users:
-        try:
-            await context.bot.send_message(chat_id=u['user_id'], text=f"📢 <b>ADMIN BROADCAST:</b>\n\n{msg}", parse_mode="HTML")
-            count += 1
-        except: continue
-    await update.message.reply_text(f"✅ Sent to {count} users.")
+    if w >= 3:
+        users.update_one({"user_id": u["user_id"]}, {"$set": {"banned": True}})
+        await context.bot.send_message(
+            ADMIN_ID, f"🚫 User {u['user_id']} auto-banned (spam)"
+        )
+    else:
+        await update.message.reply_text(f"⚠️ Warning {w}/3")
 
-@admin_only
-async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Bans a user by ID."""
-    if not context.args: return
-    uid = int(context.args[0])
-    users_col.update_one({"user_id": uid}, {"$set": {"is_banned": True}})
-    await update.message.reply_text(f"🚫 User {uid} has been banned.")
+# ================= PLANS ===================
+async def plans(update: Update, context):
+    q = update.callback_query
+    await q.answer()
 
-@admin_only
-async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Restores access to a banned user."""
-    if not context.args: return
-    uid = int(context.args[0])
-    users_col.update_one({"user_id": uid}, {"$set": {"is_banned": False}})
-    await update.message.reply_text(f"✅ User {uid} has been unbanned.")
+    kb = []
+    for c in cats.find():
+        kb.append([InlineKeyboardButton(f"📂 {c['name']}", callback_data=f"cat|{c['name']}")])
 
-# --- NAVIGATION & PAYMENT HANDLERS ---
+    await q.edit_message_caption("💎 Select Category", reply_markup=glass(kb))
 
-async def handle_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    data = query.data
-    await query.answer()
+# ================= CATEGORY =================
+async def category(update: Update, context):
+    q = update.callback_query
+    _, cat = q.data.split("|")
+    await q.answer()
 
-    if data == "back_start":
-        await start(update, context)
-        return
+    data = cats.find_one({"name": cat})
+    kb = []
 
-    if data.startswith("cat_"):
-        cat_name = data.split("_")[1]
-        cat = cats_col.find_one({"name": cat_name})
-        keyboard = [[InlineKeyboardButton(f"🔹 {sub['name']}", callback_data=f"sub_{cat_name}_{sub['name']}")] for sub in cat.get('subs', [])]
-        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="back_start")])
-        await query.edit_message_caption(caption=f"📂 <b>{cat_name}</b>", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+    for s in data.get("subs", []):
+        kb.append([InlineKeyboardButton(
+            f"{s['name']} – ₹{s['monthly']}/₹{s['yearly']}",
+            callback_data=f"pay|{cat}|{s['name']}|{s['monthly']}|30"
+        )])
 
-    elif data.startswith("sub_"):
-        _, cat_name, sub_name = data.split("_")
-        cat = cats_col.find_one({"name": cat_name})
-        sub = next(s for s in cat['subs'] if s['name'] == sub_name)
-        
-        keyboard = [
-            [InlineKeyboardButton(f"Monthly - ₹{sub['m']}", callback_data=f"plan_{sub['m']}_30_{sub_name}")],
-            [InlineKeyboardButton(f"Yearly - ₹{sub['y']}", callback_data=f"plan_{sub['y']}_365_{sub_name}")],
-            [InlineKeyboardButton("🔙 Back", callback_data=f"cat_{cat_name}")]
-        ]
-        await query.edit_message_caption(caption=f"💎 <b>{sub_name} Plans</b>", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+    await q.edit_message_caption(f"📂 *{cat}*", reply_markup=glass(kb), parse_mode="Markdown")
 
-async def handle_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    _, amount, days, sub_name = query.data.split("_")
-    upi_uri = f"upi://pay?pa={ADMIN_UPI}&pn=Admin&am={amount}&cu=INR"
+# ================= PAYMENT ==================
+async def payment(update, context):
+    q = update.callback_query
+    _, cat, sub, price, days = q.data.split("|")
+    await q.answer()
+
+    upi_uri = f"upi://pay?pa={ADMIN_UPI}&pn=VIP&am={price}&cu=INR"
     qr = segno.make(upi_uri)
-    out = io.BytesIO()
-    qr.save(out, kind='png', scale=10)
-    out.seek(0)
-    await query.message.reply_photo(photo=out, caption=f"✅ <b>Pay ₹{amount} for {sub_name}</b>\nSend screenshot after paying.")
+    bio = io.BytesIO()
+    qr.save(bio, kind="png", scale=8)
+    bio.seek(0)
 
-async def verify_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.photo:
-        keyboard = [[InlineKeyboardButton("✅ Approve 30 Days", callback_data=f"apprv_{update.effective_user.id}_30")],
-                    [InlineKeyboardButton("✅ Approve 365 Days", callback_data=f"apprv_{update.effective_user.id}_365")]]
-        await context.bot.send_photo(chat_id=ADMIN_ID, photo=update.message.photo[-1].file_id, 
-                                     caption=f"💳 Proof from {update.effective_user.id}", reply_markup=InlineKeyboardMarkup(keyboard))
-        await update.message.reply_text("✅ Receipt received! Admin is verifying.")
+    kb = [
+        [
+            InlineKeyboardButton("🟢 Google Pay", url=upi_uri),
+            InlineKeyboardButton("🟣 PhonePe", url=upi_uri)
+        ],
+        [InlineKeyboardButton("🔵 Paytm", url=upi_uri)],
+        [InlineKeyboardButton("💳 PayPal", url=PAYPAL_LINK)],
+        [InlineKeyboardButton("🏦 Bank Transfer", callback_data="bank")]
+    ]
 
-async def admin_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    _, user_id, days = query.data.split("_")
+    await q.message.reply_photo(
+        bio,
+        caption=(
+            f"💎 *VIP Payment*\n\n"
+            f"📦 Plan: `{sub}`\n"
+            f"💰 Amount: `₹{price}`\n"
+            f"📅 Validity: `{days} days`\n\n"
+            f"📸 Send payment screenshot after paying"
+        ),
+        reply_markup=glass(kb),
+        parse_mode="Markdown"
+    )
+
+# ================= BANK ====================
+async def bank(update: Update, context):
+    q = update.callback_query
+    await q.answer()
+    await q.message.reply_text(f"🏦 *Bank Details*\n\n{BANK_DETAILS}", parse_mode="Markdown")
+
+# ================= RECEIPT =================
+async def receipt(update, context):
+    await context.bot.send_photo(
+        ADMIN_ID,
+        update.message.photo[-1].file_id,
+        caption=f"🧾 Payment proof from {update.effective_user.id}",
+        reply_markup=glass([
+            [InlineKeyboardButton("✅ Approve 30 Days", callback_data=f"ok|{update.effective_user.id}|30")],
+            [InlineKeyboardButton("✅ Approve 365 Days", callback_data=f"ok|{update.effective_user.id}|365")]
+        ])
+    )
+    await update.message.reply_text("⏳ Waiting for admin approval")
+
+# ================= APPROVAL =================
+async def approve(update, context):
+    q = update.callback_query
+    _, uid, days = q.data.split("|")
+    uid, days = int(uid), int(days)
+
     now = datetime.datetime.now()
-    expiry = (now + datetime.timedelta(days=int(days))).strftime("%Y-%m-%d")
-    users_col.update_one({"user_id": int(user_id)}, {"$set": {"is_vip": True, "expiry_date": expiry}})
-    
-    receipt = (f"🧾 <b>VIP PURCHASE RECEIPT</b>\n━━━━━━━━━━━━━━━━━━━━\n"
-               f"👤 <b>Name:</b> {update.effective_user.full_name}\n"
-               f"📅 <b>Date:</b> {now.strftime('%d %b %Y')}\n"
-               f"⌛ <b>Validity:</b> {days} Days\n"
-               f"📅 <b>Expires:</b> {expiry}\n━━━━━━━━━━━━━━━━━━━━")
-    await context.bot.send_message(chat_id=int(user_id), text=receipt, parse_mode="HTML")
-    await query.edit_message_caption(caption=f"✅ Approved until {expiry}")
+    expiry = now + datetime.timedelta(days=days)
 
-# --- MAIN ---
+    users.update_one(
+        {"user_id": uid},
+        {"$set": {"is_vip": True, "expiry": expiry}}
+    )
 
-def main():
-    def run_health():
-        with socketserver.TCPServer(("0.0.0.0", int(os.environ.get("PORT", 8080))), http.server.SimpleHTTPRequestHandler) as h: h.serve_forever()
-    threading.Thread(target=run_health, daemon=True).start()
+    invoice = (
+        f"🧾 *VIP INVOICE*\n\n"
+        f"👤 User ID: `{uid}`\n"
+        f"📅 Purchased: `{now}`\n"
+        f"⌛ Validity: `{days} days`\n"
+        f"⛔ Expires: `{expiry}`"
+    )
 
-    application = Application.builder().token(TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("broadcast", broadcast))
-    application.add_handler(CommandHandler("ban", ban_user))
-    application.add_handler(CommandHandler("unban", unban_user))
-    
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_passcode))
-    application.add_handler(MessageHandler(filters.PHOTO, verify_payment))
-    application.add_handler(CallbackQueryHandler(handle_navigation, pattern='^(cat_|sub_|back_)'))
-    application.add_handler(CallbackQueryHandler(handle_payment, pattern='^plan_'))
-    application.add_handler(CallbackQueryHandler(admin_approval, pattern='^apprv_'))
-    
-    application.run_polling(drop_pending_updates=True)
+    await context.bot.send_message(uid, invoice, parse_mode="Markdown")
+    await q.edit_message_caption("✅ Approved")
 
-if __name__ == '__main__': main()
+# ================= EXPIRY JOB ===============
+async def expiry_job(app):
+    while True:
+        now = datetime.datetime.now()
+        for u in users.find({"is_vip": True}):
+            if u["expiry"] <= now:
+                users.update_one({"user_id": u["user_id"]}, {"$set": {"is_vip": False}})
+                await app.bot.send_message(u["user_id"], "❌ VIP expired")
+                await app.bot.send_message(ADMIN_ID, f"⏰ VIP expired: {u['user_id']}")
+        await asyncio.sleep(3600)
+
+# ================= MAIN =====================
+async def main():
+    app = Application.builder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(plans, pattern="plans"))
+    app.add_handler(CallbackQueryHandler(category, pattern="cat\\|"))
+    app.add_handler(CallbackQueryHandler(payment, pattern="pay\\|"))
+    app.add_handler(CallbackQueryHandler(bank, pattern="bank"))
+    app.add_handler(CallbackQueryHandler(approve, pattern="ok\\|"))
+
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, passcode))
+    app.add_handler(MessageHandler(filters.PHOTO, receipt))
+
+    asyncio.create_task(expiry_job(app))
+    await app.run_polling()
+
+if __name__ == "__main__":
+    asyncio.run(main())
     

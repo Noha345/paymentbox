@@ -12,7 +12,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 # --- CONFIGURATION ---
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
-MONGO_URI = os.environ.get("MONGO_URI") # Add this to Render!
+MONGO_URI = os.environ.get("MONGO_URI")
 ADMIN_UPI = os.environ.get("ADMIN_UPI", "yourname@upi")
 PAYPAL_LINK = os.environ.get("PAYPAL_LINK", "https://paypal.me/yourname")
 BANK_DETAILS = os.environ.get("BANK_DETAILS", "Bank: XYZ\nAcc: 123456789\nIFSC: BANK0001")
@@ -24,10 +24,11 @@ SUPPORT_URL = os.environ.get("SUPPORT_URL", "https://t.me/YourUsername")
 # --- DATABASE SETUP ---
 client = MongoClient(MONGO_URI)
 db = client['payment_bot']
-users_col = db['users'] # Stores all users
+users_col = db['users']
 
 # --- HEALTH CHECK SERVER ---
 def run_health_check():
+    """Starts a simple server to satisfy Render's port requirements."""
     port = int(os.environ.get("PORT", 8080))
     with socketserver.TCPServer(("0.0.0.0", port), http.server.SimpleHTTPRequestHandler) as httpd:
         httpd.serve_forever()
@@ -45,7 +46,7 @@ def admin_only(func):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    # Save/Update user in MongoDB
+    # Ensure user is recorded in MongoDB with Join Date
     if not users_col.find_one({"user_id": user.id}):
         users_col.insert_one({
             "user_id": user.id,
@@ -71,15 +72,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = [[InlineKeyboardButton("💎 View VIP Plans", callback_data='view_plans')],
                 [InlineKeyboardButton("📞 Contact Support", url=SUPPORT_URL)]]
-    await update.message.reply_photo(photo=WELCOME_IMAGE, caption="Welcome! Choose a plan:", reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    caption = "<b>Welcome!</b> Choose a plan below to get started:"
+    try:
+        await update.message.reply_photo(photo=WELCOME_IMAGE, caption=caption, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+    except:
+        await update.message.reply_text(caption, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
 async def check_passcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('is_auth'): return 
     if update.message.text == BOT_PASSCODE:
         context.user_data['is_auth'] = True
-        await update.message.reply_text("✅ Access Granted! Use /start")
+        await update.message.reply_text("✅ Access Granted! Use /start to see plans.")
     else:
-        await update.message.reply_text("❌ Incorrect passcode.")
+        await update.message.reply_text("❌ Incorrect passcode. Try again:")
 
 async def view_plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -106,25 +112,29 @@ async def handle_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         out = io.BytesIO()
         qr.save(out, kind='png', scale=10)
         out.seek(0)
-        await query.message.reply_photo(photo=out, caption=f"✅ Pay ₹{amount}\nSend screenshot with /days {days}")
+        await query.message.reply_photo(photo=out, caption=f"✅ Pay ₹{amount} via UPI\nAfter paying, send the screenshot.")
+    else:
+        await query.message.reply_text(f"💳 PayPal: {PAYPAL_LINK}\nSend screenshot after paying.")
 
 # --- ADMIN FUNCTIONS ---
 
 @admin_only
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Gives complete details of VIP and Non-VIP users."""
+    """Generates a report of all users, including Join and Expiry dates."""
     all_users = list(users_col.find())
+    if not all_users:
+        await update.message.reply_text("No users found in database.")
+        return
+
     report = "📊 <b>Detailed User Report</b>\n\n"
-    
     for u in all_users:
-        status = "✨ VIP" if u['is_vip'] else "👤 User"
-        report += (f"<b>{status}</b>: {u['full_name']}\n"
-                   f"├ ID: <code>{u['user_id']}</code>\n"
-                   f"├ User: {u['username']}\n"
-                   f"├ Joined: {u['join_date']}\n"
-                   f"└ Expiry: {u['expiry_date']}\n\n")
+        status = "✨ VIP" if u.get('is_vip') else "👤 USER"
+        report += (f"<b>{status}</b>: {u.get('full_name')}\n"
+                   f"├ ID: <code>{u.get('user_id')}</code>\n"
+                   f"├ Username: {u.get('username')}\n"
+                   f"├ Joined: {u.get('join_date')}\n"
+                   f"└ Expiry: {u.get('expiry_date')}\n\n")
     
-    # Split message if too long for Telegram
     if len(report) > 4096:
         for i in range(0, len(report), 4096):
             await update.message.reply_text(report[i:i+4096], parse_mode="HTML")
@@ -133,31 +143,34 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def set_new_passcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Allows Admin to set a new passcode via Telegram command."""
     if context.args:
         global BOT_PASSCODE
         BOT_PASSCODE = context.args[0]
-        await update.message.reply_text(f"✅ Passcode updated: {BOT_PASSCODE}")
+        await update.message.reply_text(f"✅ Passcode updated to: {BOT_PASSCODE}")
 
 async def verify_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.photo:
-        caption = update.message.caption if update.message.caption else ""
-        days = "30" if "365" not in caption else "365"
         await context.bot.send_photo(
             chat_id=ADMIN_ID,
             photo=update.message.photo[-1].file_id,
-            caption=f"💳 Proof from {update.effective_user.id}\nPlan: {days} Days",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Approve", callback_data=f"apprv_{update.effective_user.id}_{days}")]])
+            caption=f"💳 Proof from {update.effective_user.id}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Approve 30 Days", callback_data=f"apprv_{update.effective_user.id}_30")],
+                [InlineKeyboardButton("✅ Approve 365 Days", callback_data=f"apprv_{update.effective_user.id}_365")]
+            ])
         )
-        await update.message.reply_text("✅ Admin is verifying.")
+        await update.message.reply_text("✅ Receipt received! Admin is verifying.")
 
 async def admin_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     _, user_id, days = query.data.split("_")
     expiry = (datetime.datetime.now() + datetime.timedelta(days=int(days))).strftime("%Y-%m-%d")
     
+    # Update VIP status and expiry in MongoDB
     users_col.update_one({"user_id": int(user_id)}, {"$set": {"is_vip": True, "expiry_date": expiry}})
     
-    await context.bot.send_message(chat_id=int(user_id), text=f"🎉 Approved! Exp: {expiry}\nJoin: {CHANNEL_LINK}")
+    await context.bot.send_message(chat_id=int(user_id), text=f"🎉 Payment Approved! Access expires on {expiry}.\nJoin: {CHANNEL_LINK}")
     await query.edit_message_caption(caption=f"✅ Approved until {expiry}")
 
 # --- MAIN BLOCK ---
@@ -165,6 +178,7 @@ def main():
     threading.Thread(target=run_health_check, daemon=True).start()
     application = Application.builder().token(TOKEN).build()
     
+    # Handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("stats", stats))
     application.add_handler(CommandHandler("setpass", set_new_passcode))
@@ -180,4 +194,4 @@ def main():
 
 if __name__ == '__main__':
     main()
-        
+    

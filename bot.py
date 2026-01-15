@@ -4,11 +4,11 @@ import datetime
 import threading
 import http.server
 import socketserver
-import segno  # Ensure 'segno' is in your requirements.txt
+import segno  # Ensure 'segno' is in requirements.txt
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-# --- CONFIGURATION (Render Environment Variables) ---
+# --- CONFIGURATION (Set these in Render Environment Variables) ---
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
 ADMIN_UPI = os.environ.get("ADMIN_UPI", "yourname@upi")
@@ -19,7 +19,7 @@ WELCOME_IMAGE = "https://files.catbox.moe/17kvug.jpg"
 BOT_PASSCODE = os.environ.get("BOT_PASSCODE", "1234")
 SUPPORT_URL = os.environ.get("SUPPORT_URL", "https://t.me/YourUsername")
 
-# In-memory storage (Note: Resets when Render restarts)
+# In-memory storage (Resets when Render restarts)
 registered_users = set()
 vip_users = set()
 banned_users = set()
@@ -114,7 +114,6 @@ async def handle_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Displays user and VIP counts."""
     total = len(registered_users)
     vips = len(vip_users)
     non_vips = total - vips
@@ -180,7 +179,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_passcode))
     
-    # Admin Commands
+    # Admin Handlers
     application.add_handler(CommandHandler("stats", stats))
     application.add_handler(CommandHandler("setpass", set_new_passcode))
     application.add_handler(CommandHandler("broadcast", broadcast))

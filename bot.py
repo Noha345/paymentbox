@@ -12,27 +12,36 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 # --- CONFIGURATION ---
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
-MONGO_URI = os.environ.get("MONGO_URI")
+# Check for both MONGO and MANGO to be safe
+MONGO_URI = os.environ.get("MONGO_URI") or os.environ.get("MANGO_URI")
 ADMIN_UPI = os.environ.get("ADMIN_UPI", "yourname@upi")
-WELCOME_IMAGE = "https://files.catbox.moe/17kvug.jpg"
+WELCOME_IMAGE = os.environ.get("WELCOME_IMAGE", "https://files.catbox.moe/17kvug.jpg")
 BOT_PASSCODE = os.environ.get("BOT_PASSCODE", "1234")
 
 # --- DATABASE SETUP ---
-# Connection timeout added to prevent long hangs
-client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-db = client['payment_bot']
-users_col = db['users']
-settings_col = db['settings']
-
-# Initialize default settings
-if not settings_col.find_one({"id": "config"}):
-    settings_col.insert_one({
-        "id": "config",
-        "channel_link": "https://t.me/MyAnimeEnglish",
-        "monthly_price": 500,
-        "yearly_price": 5000,
-        "support_url": "https://t.me/YourUsername"
-    })
+if not MONGO_URI:
+    print("❌ CRITICAL ERROR: Database URI variable is missing in Render!")
+    db = None
+else:
+    try:
+        # Timeout prevents the bot from hanging if the connection is blocked
+        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        db = client['payment_bot']
+        users_col = db['users']
+        settings_col = db['settings']
+        
+        # Initialize default settings if they don't exist
+        if not settings_col.find_one({"id": "config"}):
+            settings_col.insert_one({
+                "id": "config",
+                "channel_link": os.environ.get("CHANNEL_LINK", "https://t.me/MyAnimeEnglish"),
+                "monthly_price": 500,
+                "yearly_price": 5000,
+                "support_url": os.environ.get("SUPPORT_URL", "https://t.me/YourUsername")
+            })
+    except Exception as e:
+        print(f"❌ Database Connection Failed: {e}")
+        db = None
 
 # --- HEALTH CHECK SERVER ---
 def run_health_check():
@@ -50,8 +59,11 @@ def admin_only(func):
     return wrapper
 
 # --- USER FUNCTIONS ---
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not db:
+        await update.message.reply_text("⚠️ Database not connected. Check your MONGO_URI on Render.")
+        return
+        
     user = update.effective_user
     config = settings_col.find_one({"id": "config"})
     
@@ -69,7 +81,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['is_auth'] = False
 
     if not context.user_data['is_auth'] and user.id != ADMIN_ID:
-        await update.message.reply_text("🔐 <b>Bot is Locked.</b>\nEnter passcode:", parse_mode="HTML")
+        await update.message.reply_text("🔐 <b>Bot is Locked.</b>\nPlease enter the passcode:", parse_mode="HTML")
         return
 
     keyboard = [[InlineKeyboardButton("💎 View VIP Plans", callback_data='view_plans')],
@@ -81,18 +93,11 @@ async def check_passcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('is_auth'): return 
     if update.message.text == BOT_PASSCODE:
         context.user_data['is_auth'] = True
-        await update.message.reply_text("✅ Access Granted! Use /start")
+        await update.message.reply_text("✅ Access Granted! Use /start.")
     else:
         await update.message.reply_text("❌ Incorrect passcode.")
 
-# --- ADMIN CUSTOMIZATION COMMANDS ---
-
-@admin_only
-async def set_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args: return
-    settings_col.update_one({"id": "config"}, {"$set": {"channel_link": context.args[0]}})
-    await update.message.reply_text(f"✅ VIP Link updated.")
-
+# --- ADMIN FUNCTIONS ---
 @admin_only
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     all_users = list(users_col.find())
@@ -105,8 +110,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
                    f"└ Expiry: {u.get('expiry_date')}\n\n")
     await update.message.reply_text(report, parse_mode="HTML")
 
-# --- PAYMENT FLOW ---
-
+# --- HANDLERS ---
 async def view_plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -126,7 +130,7 @@ async def handle_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     out = io.BytesIO()
     qr.save(out, kind='png', scale=10)
     out.seek(0)
-    await query.message.reply_photo(photo=out, caption=f"✅ Pay ₹{amount}\nSend screenshot after paying.")
+    await query.message.reply_photo(photo=out, caption=f"✅ Pay ₹{amount} via UPI\nSend screenshot after paying.")
 
 async def verify_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.photo:
@@ -147,7 +151,7 @@ async def admin_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     config = settings_col.find_one({"id": "config"})
     expiry = (datetime.datetime.now() + datetime.timedelta(days=int(days))).strftime("%Y-%m-%d")
     users_col.update_one({"user_id": int(user_id)}, {"$set": {"is_vip": True, "expiry_date": expiry}})
-    await context.bot.send_message(chat_id=int(user_id), text=f"🎉 Approved until {expiry}\nJoin: {config['channel_link']}")
+    await context.bot.send_message(chat_id=int(user_id), text=f"🎉 Approved! Exp: {expiry}\nJoin: {config['channel_link']}")
     await query.edit_message_caption(caption=f"✅ Approved until {expiry}")
 
 def main():
@@ -155,7 +159,6 @@ def main():
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("stats", stats))
-    application.add_handler(CommandHandler("setlink", set_link))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_passcode))
     application.add_handler(MessageHandler(filters.PHOTO, verify_payment))
     application.add_handler(CallbackQueryHandler(view_plans, pattern='^view_plans$'))
@@ -165,3 +168,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+    

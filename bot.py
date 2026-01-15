@@ -1,236 +1,127 @@
-import os, io, asyncio, datetime
-from functools import wraps
-from pymongo import MongoClient
+import os
+import io
+import datetime
+import threading
+import http.server
+import socketserver
 import segno
+from pymongo import MongoClient
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup
-)
-from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler,
-    MessageHandler, ContextTypes, filters
-)
+# --- CONFIGURATION ---
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
+# Handles both MONGO and MANGO naming from your settings
+MONGO_URI = os.environ.get("MONGO_URI") or os.environ.get("MANGO_URI")
+ADMIN_UPI = os.environ.get("ADMIN_UPI", "yourname@upi")
+WELCOME_IMAGE = "https://files.catbox.moe/17kvug.jpg"
+BOT_PASSCODE = os.environ.get("BOT_PASSCODE", "1234")
 
-# ================= CONFIG =================
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
-MONGO_URI = os.getenv("MONGO_URI")
-BOT_PASSCODE = os.getenv("BOT_PASSCODE")
+# --- DATABASE SETUP ---
+try:
+    # 5-second timeout prevents the bot from hanging
+    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+    db = client['payment_bot']
+    users_col = db['users']
+    cats_col = db['categories']
+    client.admin.command('ping') 
+except Exception as e:
+    print(f"❌ DB Error: {e}")
+    db = None
 
-ADMIN_UPI = os.getenv("ADMIN_UPI")
-PAYPAL_LINK = os.getenv("PAYPAL_LINK")
-BANK_DETAILS = os.getenv("BANK_DETAILS")
-WELCOME_IMAGE = os.getenv("WELCOME_IMAGE")
-
-# ================= DB =====================
-client = MongoClient(MONGO_URI)
-db = client.vipbot
-users = db.users
-cats = db.categories
-
-# ================= HELPERS =================
+# --- ADMIN DECORATOR ---
 def admin_only(func):
-    @wraps(func)
-    async def wrapper(update: Update, context):
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_user.id != ADMIN_ID:
+            await update.message.reply_text("❌ Access Denied.")
             return
         return await func(update, context)
     return wrapper
 
-def glass(btns):
-    return InlineKeyboardMarkup(btns)
+# --- USER FUNCTIONS ---
 
-# ================= START ===================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    u = update.effective_user
-
-    users.update_one(
-        {"user_id": u.id},
-        {"$setOnInsert": {
-            "name": u.full_name,
-            "is_vip": False,
-            "warnings": 0,
-            "banned": False
-        }},
-        upsert=True
-    )
-
-    if users.find_one({"user_id": u.id, "banned": True}):
+    # FIXED: Proper check for DB object to avoid NotImplementedError
+    if db is None:
+        target = update.callback_query.message if update.callback_query else update.message
+        await target.reply_text("⚠️ Database Offline. Check MONGO_URI.")
         return
 
-    if not context.user_data.get("auth") and u.id != ADMIN_ID:
-        await update.message.reply_text("🔐 Enter bot password:")
+    user = update.effective_user
+    if not context.user_data.get('is_auth', False) and user.id != ADMIN_ID:
+        await (update.callback_query.message if update.callback_query else update.message).reply_text("🔐 Enter passcode:")
         return
 
-    kb = [
-        [InlineKeyboardButton("💎 View VIP Plans", callback_data="plans")],
-        [InlineKeyboardButton("📞 Contact Admin", url=f"tg://user?id={ADMIN_ID}")]
-    ]
-
-    await update.message.reply_photo(
-        photo=WELCOME_IMAGE,
-        caption=f"👋 Welcome *{u.full_name}*\n🆔 `{u.id}`",
-        reply_markup=glass(kb),
-        parse_mode="Markdown"
-    )
-
-# ================= PASSCODE =================
-async def passcode(update: Update, context):
-    if update.message.text == BOT_PASSCODE:
-        context.user_data["auth"] = True
-        await update.message.reply_text("✅ Access granted. Use /start")
+    categories = list(cats_col.find())
+    keyboard = [[InlineKeyboardButton(f"📂 {cat['name']}", callback_data=f"cat_{cat['name']}")] for cat in categories]
+    
+    msg = "<b>Welcome!</b> Please select a category to view VIP plans:"
+    if update.callback_query:
+        await update.callback_query.edit_message_caption(caption=msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
     else:
-        await warn(update, context)
+        await update.message.reply_photo(photo=WELCOME_IMAGE, caption=msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
-# ================= WARN SYSTEM =============
-async def warn(update, context):
-    u = users.find_one({"user_id": update.effective_user.id})
-    w = u.get("warnings", 0) + 1
-    users.update_one({"user_id": u["user_id"]}, {"$set": {"warnings": w}})
+# --- NAVIGATION HANDLER (FIXED BACK BUTTON) ---
 
-    if w >= 3:
-        users.update_one({"user_id": u["user_id"]}, {"$set": {"banned": True}})
-        await context.bot.send_message(
-            ADMIN_ID, f"🚫 User {u['user_id']} auto-banned (spam)"
-        )
-    else:
-        await update.message.reply_text(f"⚠️ Warning {w}/3")
+async def handle_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+    await query.answer()
 
-# ================= PLANS ===================
-async def plans(update: Update, context):
-    q = update.callback_query
-    await q.answer()
+    # FIXED: back_start now properly re-runs the start logic
+    if data == "back_start":
+        await start(update, context)
+        return
 
-    kb = []
-    for c in cats.find():
-        kb.append([InlineKeyboardButton(f"📂 {c['name']}", callback_data=f"cat|{c['name']}")])
+    if data.startswith("cat_"):
+        cat_name = data.split("_")[1]
+        cat = cats_col.find_one({"name": cat_name})
+        keyboard = [[InlineKeyboardButton(f"🔹 {sub['name']}", callback_data=f"sub_{cat_name}_{sub['name']}")] for sub in cat.get('subs', [])]
+        keyboard.append([InlineKeyboardButton("🔙 Back to Main Menu", callback_data="back_start")])
+        await query.edit_message_caption(caption=f"📂 <b>{cat_name}</b>", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
-    await q.edit_message_caption("💎 Select Category", reply_markup=glass(kb))
+    elif data.startswith("sub_"):
+        _, cat_name, sub_name = data.split("_")
+        cat = cats_col.find_one({"name": cat_name})
+        sub = next(s for s in cat['subs'] if s['name'] == sub_name)
+        
+        keyboard = [
+            [InlineKeyboardButton(f"Monthly - ₹{sub['m']}", callback_data=f"plan_{sub['m']}_30_{sub_name}")],
+            [InlineKeyboardButton(f"Yearly - ₹{sub['y']}", callback_data=f"plan_{sub['y']}_365_{sub_name}")],
+            [InlineKeyboardButton("🔙 Back to Categories", callback_data=f"cat_{cat_name}")]
+        ]
+        await query.edit_message_caption(caption=f"💎 <b>{sub_name} Plans</b>", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
-# ================= CATEGORY =================
-async def category(update: Update, context):
-    q = update.callback_query
-    _, cat = q.data.split("|")
-    await q.answer()
+# --- ADMIN COMMANDS ---
 
-    data = cats.find_one({"name": cat})
-    kb = []
+@admin_only
+async def set_pass(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Usage: /setpass 1234"""
+    global BOT_PASSCODE
+    if not context.args:
+        await update.message.reply_text("❌ Usage: `/setpass 1234`", parse_mode="Markdown")
+        return
+    BOT_PASSCODE = context.args[0]
+    await update.message.reply_text(f"✅ Passcode updated to: `{BOT_PASSCODE}`", parse_mode="Markdown")
 
-    for s in data.get("subs", []):
-        kb.append([InlineKeyboardButton(
-            f"{s['name']} – ₹{s['monthly']}/₹{s['yearly']}",
-            callback_data=f"pay|{cat}|{s['name']}|{s['monthly']}|30"
-        )])
+# --- MAIN ---
 
-    await q.edit_message_caption(f"📂 *{cat}*", reply_markup=glass(kb), parse_mode="Markdown")
+def main():
+    # Simple Health Check for Render
+    def run_health():
+        with socketserver.TCPServer(("0.0.0.0", int(os.environ.get("PORT", 8080))), http.server.SimpleHTTPRequestHandler) as h:
+            h.serve_forever()
+    threading.Thread(target=run_health, daemon=True).start()
 
-# ================= PAYMENT ==================
-async def payment(update, context):
-    q = update.callback_query
-    _, cat, sub, price, days = q.data.split("|")
-    await q.answer()
+    application = Application.builder().token(TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("setpass", set_pass))
+    application.add_handler(CallbackQueryHandler(handle_navigation, pattern='^(cat_|sub_|back_)'))
+    
+    # Conflict Killer: drop_pending_updates resets old sessions
+    application.run_polling(drop_pending_updates=True)
 
-    upi_uri = f"upi://pay?pa={ADMIN_UPI}&pn=VIP&am={price}&cu=INR"
-    qr = segno.make(upi_uri)
-    bio = io.BytesIO()
-    qr.save(bio, kind="png", scale=8)
-    bio.seek(0)
-
-    kb = [
-        [
-            InlineKeyboardButton("🟢 Google Pay", url=upi_uri),
-            InlineKeyboardButton("🟣 PhonePe", url=upi_uri)
-        ],
-        [InlineKeyboardButton("🔵 Paytm", url=upi_uri)],
-        [InlineKeyboardButton("💳 PayPal", url=PAYPAL_LINK)],
-        [InlineKeyboardButton("🏦 Bank Transfer", callback_data="bank")]
-    ]
-
-    await q.message.reply_photo(
-        bio,
-        caption=(
-            f"💎 *VIP Payment*\n\n"
-            f"📦 Plan: `{sub}`\n"
-            f"💰 Amount: `₹{price}`\n"
-            f"📅 Validity: `{days} days`\n\n"
-            f"📸 Send payment screenshot after paying"
-        ),
-        reply_markup=glass(kb),
-        parse_mode="Markdown"
-    )
-
-# ================= BANK ====================
-async def bank(update: Update, context):
-    q = update.callback_query
-    await q.answer()
-    await q.message.reply_text(f"🏦 *Bank Details*\n\n{BANK_DETAILS}", parse_mode="Markdown")
-
-# ================= RECEIPT =================
-async def receipt(update, context):
-    await context.bot.send_photo(
-        ADMIN_ID,
-        update.message.photo[-1].file_id,
-        caption=f"🧾 Payment proof from {update.effective_user.id}",
-        reply_markup=glass([
-            [InlineKeyboardButton("✅ Approve 30 Days", callback_data=f"ok|{update.effective_user.id}|30")],
-            [InlineKeyboardButton("✅ Approve 365 Days", callback_data=f"ok|{update.effective_user.id}|365")]
-        ])
-    )
-    await update.message.reply_text("⏳ Waiting for admin approval")
-
-# ================= APPROVAL =================
-async def approve(update, context):
-    q = update.callback_query
-    _, uid, days = q.data.split("|")
-    uid, days = int(uid), int(days)
-
-    now = datetime.datetime.now()
-    expiry = now + datetime.timedelta(days=days)
-
-    users.update_one(
-        {"user_id": uid},
-        {"$set": {"is_vip": True, "expiry": expiry}}
-    )
-
-    invoice = (
-        f"🧾 *VIP INVOICE*\n\n"
-        f"👤 User ID: `{uid}`\n"
-        f"📅 Purchased: `{now}`\n"
-        f"⌛ Validity: `{days} days`\n"
-        f"⛔ Expires: `{expiry}`"
-    )
-
-    await context.bot.send_message(uid, invoice, parse_mode="Markdown")
-    await q.edit_message_caption("✅ Approved")
-
-# ================= EXPIRY JOB ===============
-async def expiry_job(app):
-    while True:
-        now = datetime.datetime.now()
-        for u in users.find({"is_vip": True}):
-            if u["expiry"] <= now:
-                users.update_one({"user_id": u["user_id"]}, {"$set": {"is_vip": False}})
-                await app.bot.send_message(u["user_id"], "❌ VIP expired")
-                await app.bot.send_message(ADMIN_ID, f"⏰ VIP expired: {u['user_id']}")
-        await asyncio.sleep(3600)
-
-# ================= MAIN =====================
-async def main():
-    app = Application.builder().token(TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(plans, pattern="plans"))
-    app.add_handler(CallbackQueryHandler(category, pattern="cat\\|"))
-    app.add_handler(CallbackQueryHandler(payment, pattern="pay\\|"))
-    app.add_handler(CallbackQueryHandler(bank, pattern="bank"))
-    app.add_handler(CallbackQueryHandler(approve, pattern="ok\\|"))
-
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, passcode))
-    app.add_handler(MessageHandler(filters.PHOTO, receipt))
-
-    asyncio.create_task(expiry_job(app))
-    await app.run_polling()
-
-if __name__ == "__main__":
-    asyncio.run(main())
+if __name__ == '__main__':
+    main()
     

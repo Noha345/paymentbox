@@ -6,3 +6,4 @@ requests==2.32.3
 segno==1.6.1
 aiohttp
 aiogram
+qrcode

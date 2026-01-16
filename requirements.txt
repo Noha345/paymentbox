@@ -7,3 +7,4 @@ segno==1.6.1
 aiohttp
 aiogram
 qrcode
+python-dotenv
